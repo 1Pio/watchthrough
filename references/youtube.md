@@ -42,9 +42,11 @@ yt-dlp --ignore-config --no-playlist --no-js-runtimes --js-runtimes node \
 
 Replace `en` with one exact caption track chosen from the inspected metadata.
 Do not request every translated caption: it adds little evidence, can trigger
-rate limits, and leaves the transcript choice ambiguous. If that selected file
-is `source.en.vtt`, retain it and create a sibling named `source.vtt` so local
-auto-transcription can discover it deterministically.
+rate limits, and leaves the transcript choice ambiguous. Keep a downloaded file
+language-qualified, such as `source.en.vtt`. Do not copy, rename, or link it to
+`source.vtt`, `source.srt`, or another source-adjacent name that watchthrough
+auto-discovers. YouTube captions are dossier and cross-check evidence, not the
+normal transcript route.
 
 If the selected formats do not merge on the installed build, choose the best supported non-transcoding alternative. Do not hide a re-encode.
 
@@ -79,4 +81,8 @@ When needed, use yt-dlp’s current documented comment options with an explicit 
 
 ## After acquisition
 
-Prepare the verified local media. Use the caption files as sidecars only with their real provenance. The agent may still choose local transcription when caption quality is insufficient, but cloud Scribe remains an explicit user choice.
+Prepare the verified local media using sufficient local transcription first. Keep acquired YouTube captions non-discoverable while local MacParakeet or a configured local adapter is attempted.
+
+Cloud Scribe is optional and may be selected only after the user explicitly authorizes the upload and cost boundary. It is never an automatic fallback.
+
+Promote one selected YouTube caption to a discoverable `source.vtt` or `source.srt` only as the strict last fallback, after sufficient local transcription is unavailable or has failed and cloud transcription is not authorized, appropriate, available, or sufficient. First inspect its provenance, language, timing, and text quality. Retain the original language-qualified file, record that the promoted transcript is a YouTube caption, then select `--transcriber sidecar` explicitly. Never describe an automatic caption as creator-authored.

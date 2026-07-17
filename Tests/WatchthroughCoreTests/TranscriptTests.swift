@@ -65,6 +65,212 @@ final class TranscriptTests: XCTestCase {
         XCTAssertEqual(scribe.words[0].providerScoreKind, "logprob")
     }
 
+    func testNormalizerDowngradesIncompleteTimedCoverage() throws {
+        let transcript = try TranscriptNormalizer.elevenLabs(Data(
+            """
+            {
+              "text": "No spoken word may disappear.",
+              "words": [
+                {"text": "No", "start": 0.0, "end": 0.2},
+                {"text": "spoken", "start": 0.2, "end": 0.4},
+                {"text": "may", "start": 0.6, "end": 0.7},
+                {"text": "disappear.", "start": 0.7, "end": 1.0}
+              ]
+            }
+            """.utf8
+        ))
+
+        XCTAssertEqual(transcript.timingPrecision, .none)
+        XCTAssertTrue(transcript.warnings.contains { $0.contains("did not cover") })
+    }
+
+    func testReadableTranscriptUsesCompleteTimedSegments() throws {
+        let transcript = CanonicalTranscript(
+            provider: "fixture",
+            timingPrecision: .segment,
+            text: "First complete sentence. Second complete sentence.",
+            segments: [
+                TranscriptSegment(
+                    id: "s1",
+                    text: "First complete\n sentence.",
+                    startSeconds: 1.25,
+                    endSeconds: 2.5,
+                    timingSource: "fixture"
+                ),
+                TranscriptSegment(
+                    id: "s2",
+                    text: "Second complete sentence.",
+                    startSeconds: 2.5,
+                    endSeconds: 4,
+                    timingSource: "fixture"
+                ),
+            ]
+        )
+        let output = temporaryDirectory.appendingPathComponent("segments.txt")
+
+        try TranscriptFiles.writeText(transcript, to: output)
+
+        XCTAssertEqual(
+            try String(contentsOf: output, encoding: .utf8),
+            """
+            [00:01.250 --> 00:02.500] First complete sentence.
+            [00:02.500 --> 00:04.000] Second complete sentence.
+
+            """
+        )
+    }
+
+    func testReadableTranscriptGroupsAllWordTokensIntoTimestampedSentences() throws {
+        let transcript = CanonicalTranscript(
+            provider: "fixture",
+            timingPrecision: .word,
+            text: "Hello world. Every token remains!",
+            words: [
+                TranscriptWord(id: "w1", text: "Hello", startSeconds: 0.1, endSeconds: 0.4),
+                TranscriptWord(id: "w2", text: " ", startSeconds: 0.4, endSeconds: 0.45, type: .spacing),
+                TranscriptWord(id: "w3", text: "world", startSeconds: 0.45, endSeconds: 0.8),
+                TranscriptWord(id: "w4", text: ".", startSeconds: 0.8, endSeconds: 0.85),
+                TranscriptWord(id: "w5", text: " ", startSeconds: 0.85, endSeconds: 0.9, type: .spacing),
+                TranscriptWord(id: "w6", text: "Every", startSeconds: 0.9, endSeconds: 1.2),
+                TranscriptWord(id: "w7", text: "token", startSeconds: 1.2, endSeconds: 1.5),
+                TranscriptWord(id: "w8", text: "remains!", startSeconds: 1.5, endSeconds: 1.9),
+            ]
+        )
+        let output = temporaryDirectory.appendingPathComponent("words.txt")
+
+        try TranscriptFiles.writeText(transcript, to: output)
+
+        XCTAssertEqual(
+            try String(contentsOf: output, encoding: .utf8),
+            """
+            [00:00.100 --> 00:00.850] Hello world.
+            [00:00.900 --> 00:01.900] Every token remains!
+
+            """
+        )
+    }
+
+    func testReadableTranscriptPrefersCompleteWordStreamOverPartialSegments() throws {
+        let transcript = CanonicalTranscript(
+            provider: "fixture",
+            timingPrecision: .word,
+            text: "Complete 4,000 word stream.",
+            words: [
+                TranscriptWord(id: "w1", text: "Complete", startSeconds: 0.1, endSeconds: 0.4),
+                TranscriptWord(id: "w2", text: "4,000", startSeconds: 0.4, endSeconds: 0.6),
+                TranscriptWord(id: "w3", text: "word", startSeconds: 0.6, endSeconds: 0.8),
+                TranscriptWord(id: "w4", text: "stream.", startSeconds: 0.8, endSeconds: 1),
+            ],
+            segments: [
+                TranscriptSegment(
+                    id: "s1",
+                    text: "Partial segment",
+                    startSeconds: 0.1,
+                    endSeconds: 0.4,
+                    timingSource: "fixture"
+                ),
+            ]
+        )
+        let output = temporaryDirectory.appendingPathComponent("complete-words.txt")
+
+        try TranscriptFiles.writeText(transcript, to: output)
+
+        XCTAssertEqual(
+            try String(contentsOf: output, encoding: .utf8),
+            "[00:00.100 --> 00:01.000] Complete 4,000 word stream.\n"
+        )
+    }
+
+    func testReadableTranscriptFallsBackToCompleteTextWhenTimedWordIsMissing() throws {
+        let transcript = CanonicalTranscript(
+            provider: "fixture",
+            timingPrecision: .word,
+            text: "No spoken word may disappear.",
+            words: [
+                TranscriptWord(id: "w1", text: "No", startSeconds: 0.1, endSeconds: 0.2),
+                TranscriptWord(id: "w2", text: "spoken", startSeconds: 0.2, endSeconds: 0.4),
+                TranscriptWord(id: "w3", text: "may", startSeconds: 0.6, endSeconds: 0.7),
+                TranscriptWord(id: "w4", text: "disappear.", startSeconds: 0.7, endSeconds: 1),
+            ]
+        )
+        let output = temporaryDirectory.appendingPathComponent("missing-word.txt")
+
+        try TranscriptFiles.writeText(transcript, to: output)
+
+        XCTAssertEqual(
+            try String(contentsOf: output, encoding: .utf8),
+            "[untimed]\nNo spoken word may disappear.\n"
+        )
+    }
+
+    func testReadableTranscriptDoesNotInventGroupTimingAroundInvalidWord() throws {
+        let transcript = CanonicalTranscript(
+            provider: "fixture",
+            timingPrecision: .none,
+            text: "Every word remains honestly untimed.",
+            words: [
+                TranscriptWord(id: "w1", text: "Every", startSeconds: 0, endSeconds: 0.2),
+                TranscriptWord(id: "w2", text: "word", startSeconds: 0.5, endSeconds: 0.3),
+                TranscriptWord(id: "w3", text: "remains", startSeconds: 0.5, endSeconds: 0.7),
+                TranscriptWord(id: "w4", text: "honestly", startSeconds: 0.7, endSeconds: 0.9),
+                TranscriptWord(id: "w5", text: "untimed.", startSeconds: 0.9, endSeconds: 1),
+            ]
+        )
+        let output = temporaryDirectory.appendingPathComponent("invalid-word-time.txt")
+
+        try TranscriptFiles.writeText(transcript, to: output)
+
+        XCTAssertEqual(
+            try String(contentsOf: output, encoding: .utf8),
+            "[untimed]\nEvery word remains honestly untimed.\n"
+        )
+    }
+
+    func testReadableTranscriptFallsBackToCompleteTextWhenTimedSegmentIsMissing() throws {
+        let transcript = CanonicalTranscript(
+            provider: "fixture",
+            timingPrecision: .segment,
+            text: "First complete sentence. Missing sentence.",
+            segments: [
+                TranscriptSegment(
+                    id: "s1",
+                    text: "First complete sentence.",
+                    startSeconds: 0.1,
+                    endSeconds: 1,
+                    timingSource: "fixture"
+                ),
+            ]
+        )
+        let output = temporaryDirectory.appendingPathComponent("missing-segment.txt")
+
+        try TranscriptFiles.writeText(transcript, to: output)
+
+        XCTAssertEqual(
+            try String(contentsOf: output, encoding: .utf8),
+            "[untimed]\nFirst complete sentence. Missing sentence.\n"
+        )
+    }
+
+    func testReadableTranscriptPreservesCompleteUntimedTextAndLabelsIt() throws {
+        let transcript = CanonicalTranscript(
+            provider: "fixture",
+            timingPrecision: .none,
+            text: "Everything   remains\ncomplete and clearly untimed."
+        )
+        let output = temporaryDirectory.appendingPathComponent("untimed.txt")
+
+        try TranscriptFiles.writeText(transcript, to: output)
+
+        XCTAssertEqual(
+            try String(contentsOf: output, encoding: .utf8),
+            """
+            [untimed]
+            Everything remains complete and clearly untimed.
+
+            """
+        )
+    }
+
     func testSRTIsSegmentPreciseAndCaptionBoundariesDoNotDuplicateWords() throws {
         let captions = temporaryDirectory.appendingPathComponent("fixture.srt")
         try Data(

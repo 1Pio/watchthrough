@@ -13,12 +13,21 @@ Record:
 
 Do not let the initial question prevent relevant contradictions or important adjacent evidence from surfacing.
 
+## Transcript ownership gate
+
+Complete transcript coverage before detailed visual inspection, surrounding-context research, or any visual/research subagent is started.
+
+- For one or a few reasonably sized videos, the main agent reads each entire clean canonical transcript from beginning to end and creates its source note.
+- For too many or unusually long videos, assign one transcript-owning subagent per video. That owner reads the full transcript and returns one complete coverage/source note. Do not split one video among partial transcript owners by default.
+- The main agent reads and assimilates every returned source note before delegating visual probes or source research.
+- Search and indexing help navigate a transcript. They never establish complete coverage by themselves.
+
 ## Source pass
 
 For each source:
 
 1. Record source identity and transcript provenance.
-2. Measure the transcript. Read a short one directly; for a long transcript or several sources, partition or delegate coherent timestamp ranges into concise source notes. Search is navigation, not a substitute for accounted coverage.
+2. Satisfy the transcript ownership gate and record beginning-to-end coverage.
 3. View all overview strips from beginning through decoded tail.
 4. Review the ranked event list as hints.
 5. Create a short source note before cross-source synthesis.
@@ -29,7 +38,8 @@ A useful source note contains:
 source:
 question:
 transcript provider and precision:
-coverage:
+transcript coverage receipt:
+visual coverage:
 key claims:
 visual observations:
 referenced sources:
@@ -66,7 +76,7 @@ Do not turn a speaker’s confident statement into an established fact. Do not i
 
 Track:
 
-- Transcript coverage by direct reading, bounded section notes, or explicit gaps, plus its timing precision.
+- Transcript coverage by the main reader or one transcript owner per video, plus timing precision and any explicit unreadable gap.
 - Overview first PTS, last PTS, and largest gap.
 - Candidate events reviewed.
 - Exact frames or ranges inspected.
@@ -85,9 +95,11 @@ Use bounded language such as “the complete overview was reviewed with a larges
 
 Keep packets bounded. Split independent ranges rather than generating hundreds of cells in one artifact.
 
+For a highly specific visual subagent, pass the assimilated source note plus enough local transcript context for that question, timestamp, or range. Do not attach every video transcript or make the visual subagent rediscover the source’s spoken argument.
+
 ## Multi-source synthesis
 
-Finish source-level notes independently before comparing. Then organize:
+Finish and assimilate transcript-complete source notes independently before visual delegation or comparison. Then organize:
 
 - Agreement.
 - Complementary detail.

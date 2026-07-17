@@ -28,8 +28,152 @@ public enum TranscriptFiles {
 
     public static func writeText(_ transcript: CanonicalTranscript, to url: URL) throws {
         try ensureParent(of: url)
-        try Data((transcript.text.trimmingCharacters(in: .whitespacesAndNewlines) + "\n").utf8)
+        try Data((readableText(transcript) + "\n").utf8)
             .write(to: url, options: .atomic)
+    }
+
+    private static func readableText(_ transcript: CanonicalTranscript) -> String {
+        let canonicalText = cleanText(transcript.text)
+        if transcript.timingPrecision == .word, !transcript.words.isEmpty {
+            if let wordLines = readableWordLines(transcript.words, canonicalText: canonicalText) {
+                return wordLines.joined(separator: "\n")
+            }
+        }
+
+        let timedSegments = transcript.segments.compactMap { segment -> (String, Double?, Double?)? in
+            let text = cleanText(segment.text)
+            guard !text.isEmpty else { return nil }
+            return (text, segment.startSeconds, segment.endSeconds)
+        }
+        if !timedSegments.isEmpty,
+           let segmentTexts = completeTimedTexts(
+               timedSegments.map(\.0),
+               canonicalText: canonicalText
+           ) {
+            return zip(timedSegments, segmentTexts).map { segment, text in
+                "\(timeSpan(start: segment.1, end: segment.2)) \(text)"
+            }
+            .joined(separator: "\n")
+        }
+
+        return canonicalText.isEmpty ? "[untimed]" : "[untimed]\n\(canonicalText)"
+    }
+
+    private static func readableWordLines(
+        _ words: [TranscriptWord],
+        canonicalText: String
+    ) -> [String]? {
+        var groups: [[TranscriptWord]] = []
+        var current: [TranscriptWord] = []
+        var semanticTokenCount = 0
+
+        func flush() {
+            guard !current.isEmpty else { return }
+            let text = cleanText(renderPieces(current.map(\.text)))
+            if !text.isEmpty {
+                groups.append(current)
+            }
+            current.removeAll(keepingCapacity: true)
+            semanticTokenCount = 0
+        }
+
+        for word in words {
+            if let previous = current.last,
+               word.startSeconds - previous.endSeconds >= 1.5 {
+                flush()
+            } else if let first = current.first,
+                      semanticTokenCount >= 40 || word.endSeconds - first.startSeconds >= 20 {
+                flush()
+            }
+
+            current.append(word)
+            if word.type != .spacing, !word.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                semanticTokenCount += 1
+            }
+            if isSentenceEnding(word.text) {
+                flush()
+            }
+        }
+        flush()
+
+        let renderedTexts = groups.map { cleanText(renderPieces($0.map(\.text))) }
+        guard let displayTexts = completeTimedTexts(
+            renderedTexts,
+            canonicalText: canonicalText
+        ) else { return nil }
+        return zip(groups, displayTexts).map { group, text in
+            let spoken = group.filter {
+                $0.type != .spacing
+                    && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            let timed = spoken.isEmpty ? group : spoken
+            let hasValidTiming = timed.allSatisfy { valid($0.startSeconds, $0.endSeconds) }
+            let timestamp = timeSpan(
+                start: hasValidTiming ? timed.map(\.startSeconds).min() : nil,
+                end: hasValidTiming ? timed.map(\.endSeconds).max() : nil
+            )
+            return "\(timestamp) \(text)"
+        }
+    }
+
+    private static func completeTimedTexts(
+        _ renderedTexts: [String],
+        canonicalText: String
+    ) -> [String]? {
+        guard !renderedTexts.isEmpty else { return nil }
+        guard !canonicalText.isEmpty else { return renderedTexts }
+
+        let renderedCounts = renderedTexts.map { text in
+            text.reduce(into: 0) { count, character in
+                if !character.isWhitespace { count += 1 }
+            }
+        }
+        guard renderedCounts.allSatisfy({ $0 > 0 }) else { return nil }
+        let renderedCompact = textWithoutWhitespace(renderedTexts.joined())
+        let canonicalCompact = textWithoutWhitespace(canonicalText)
+        guard renderedCompact == canonicalCompact else { return nil }
+
+        var cursor = canonicalText.startIndex
+        var aligned: [String] = []
+        for targetCount in renderedCounts {
+            var count = 0
+            var piece = ""
+            while cursor < canonicalText.endIndex, count < targetCount {
+                let character = canonicalText[cursor]
+                piece.append(character)
+                if !character.isWhitespace { count += 1 }
+                cursor = canonicalText.index(after: cursor)
+            }
+            guard count == targetCount else { return nil }
+            aligned.append(cleanText(piece))
+        }
+        guard canonicalText[cursor...].allSatisfy(\.isWhitespace) else { return nil }
+        return aligned
+    }
+
+    private static func timeSpan(start: Double?, end: Double?) -> String {
+        guard let start, let end,
+              start.isFinite, end.isFinite, end >= start else {
+            return "[untimed]"
+        }
+        return "[\(CLIParser.formatTime(start)) --> \(CLIParser.formatTime(end))]"
+    }
+
+    private static func cleanText(_ text: String) -> String {
+        text.components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
+    private static func isSentenceEnding(_ text: String) -> Bool {
+        let closers = CharacterSet(charactersIn: "\"')]}\u{00BB}\u{2019}\u{201D}")
+        let scalars = text.trimmingCharacters(in: .whitespacesAndNewlines).unicodeScalars
+        guard !scalars.isEmpty else { return false }
+        for scalar in scalars.reversed() {
+            if closers.contains(scalar) { continue }
+            return scalar == "." || scalar == "!" || scalar == "?"
+        }
+        return false
     }
 
     public static func preserveRawResponse(_ data: Data, at url: URL) throws {
@@ -936,23 +1080,41 @@ public enum TranscriptTimeline {
 
 private func honestCanonical(_ transcript: CanonicalTranscript) -> CanonicalTranscript {
     var result = transcript
+    let canonicalCompact = textWithoutWhitespace(result.text)
     let allWordsAreTimed = !result.words.isEmpty && result.words.allSatisfy {
         valid($0.startSeconds, $0.endSeconds)
     }
-    if allWordsAreTimed {
+    let wordsCoverText = canonicalCompact.isEmpty
+        || textWithoutWhitespace(result.words.map(\.text).joined()) == canonicalCompact
+    let allSegmentsAreTimed = !result.segments.isEmpty
+        && result.segments.allSatisfy { segment in
+            guard let start = segment.startSeconds, let end = segment.endSeconds else { return false }
+            return valid(start, end)
+        }
+    let segmentsCoverText = canonicalCompact.isEmpty
+        || textWithoutWhitespace(result.segments.map(\.text).joined()) == canonicalCompact
+
+    if allWordsAreTimed, wordsCoverText {
         result.timingPrecision = .word
-    } else if !result.segments.isEmpty,
-              result.segments.allSatisfy({ segment in
-                  guard let start = segment.startSeconds, let end = segment.endSeconds else { return false }
-                  return valid(start, end)
-              }) {
+    } else if allSegmentsAreTimed, segmentsCoverText {
         result.timingPrecision = .segment
     } else {
         result.timingPrecision = .none
     }
+    if allWordsAreTimed, !wordsCoverText {
+        let warning = "Word timestamps did not cover the complete transcript text; aggregate timing precision was downgraded."
+        if !result.warnings.contains(warning) { result.warnings.append(warning) }
+    } else if allSegmentsAreTimed, !segmentsCoverText {
+        let warning = "Segment timestamps did not cover the complete transcript text; aggregate timing precision was downgraded."
+        if !result.warnings.contains(warning) { result.warnings.append(warning) }
+    }
     result.speakersAvailable = result.words.contains { $0.speaker != nil }
         || result.segments.contains { $0.speaker != nil }
     return result
+}
+
+private func textWithoutWhitespace(_ text: String) -> String {
+    text.filter { !$0.isWhitespace }
 }
 
 private func valid(_ start: Double, _ end: Double) -> Bool {

@@ -56,6 +56,10 @@ YouTube acquisition is intentionally documented in [references/youtube.md](refer
 
 ElevenLabs Scribe v2 is available only through explicit --transcriber scribe. Its key can come from the process environment, macOS Keychain, or ~/.config/watchthrough/.env. The tool never places it in process arguments or artifacts.
 
+Downloaded YouTube captions remain language-qualified and non-auto-discoverable. They are not the normal transcript route. Use sufficient local transcription first, use Scribe only with explicit authorization, and promote a vetted YouTube caption to a discoverable sidecar only as the strict last fallback described in [references/youtube.md](references/youtube.md).
+
+The bundled skill has a transcript ownership gate. For one or a few reasonably sized videos, the main agent reads every clean transcript in full before detailed visual or surrounding-context work. For too many or unusually long videos, one transcript-owning subagent reads each full video transcript and returns a complete source note, which the main agent assimilates before visual delegation.
+
 ## Development
 
 No third-party Swift package is used.
