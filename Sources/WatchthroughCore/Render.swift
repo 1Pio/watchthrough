@@ -7,8 +7,10 @@ import UniformTypeIdentifiers
 public struct StripRenderOptions: Equatable, Sendable {
     public static let hardMaximumCells = 20
     public static let hardMaximumStripWidth = 6_000
+    public static let hardMaximumColumns = 5
 
     public var maximumCellsPerSheet: Int
+    public var maximumColumns: Int
     public var preferredCellWidth: Int
     public var minimumCellWidth: Int
     public var maximumCellWidth: Int
@@ -16,12 +18,14 @@ public struct StripRenderOptions: Equatable, Sendable {
 
     public init(
         maximumCellsPerSheet: Int = 15,
+        maximumColumns: Int = 5,
         preferredCellWidth: Int = 360,
         minimumCellWidth: Int = 280,
         maximumCellWidth: Int = 420,
         maximumCaptionLines: Int = 4
     ) {
         self.maximumCellsPerSheet = min(Self.hardMaximumCells, max(1, maximumCellsPerSheet))
+        self.maximumColumns = min(Self.hardMaximumColumns, max(1, maximumColumns))
         self.minimumCellWidth = min(420, max(280, minimumCellWidth))
         self.maximumCellWidth = min(420, max(self.minimumCellWidth, maximumCellWidth))
         self.preferredCellWidth = min(self.maximumCellWidth, max(self.minimumCellWidth, preferredCellWidth))
@@ -29,8 +33,8 @@ public struct StripRenderOptions: Equatable, Sendable {
     }
 }
 
-/// Renders one-row, transcript-captioned PNG strips without invoking a second
-/// image tool. Pages are balanced rather than leaving a nearly empty last page.
+/// Renders compact, transcript-captioned PNG contact sheets without invoking a
+/// second image tool. Pages and rows are balanced for agent legibility.
 public enum StripRenderer {
     public static func balancedPageSizes(itemCount: Int, maximumPerPage: Int = 15) -> [Int] {
         guard itemCount > 0 else { return [] }
@@ -50,6 +54,17 @@ public enum StripRenderer {
             defer { offset += count }
             return Array(elements[offset..<(offset + count)])
         }
+    }
+
+    public static func gridDimensions(
+        itemCount: Int,
+        maximumColumns: Int = StripRenderOptions.hardMaximumColumns
+    ) -> (columns: Int, rows: Int) {
+        guard itemCount > 0 else { return (0, 0) }
+        let columnLimit = min(StripRenderOptions.hardMaximumColumns, max(1, maximumColumns))
+        let rows = Int(ceil(Double(itemCount) / Double(columnLimit)))
+        let columns = Int(ceil(Double(itemCount) / Double(rows)))
+        return (columns, rows)
     }
 
     /// Renders all packet cells and returns the PNG paths in page order.
@@ -96,18 +111,22 @@ public enum StripRenderer {
         destination: URL,
         options: StripRenderOptions
     ) throws {
+        let grid = gridDimensions(
+            itemCount: cells.count,
+            maximumColumns: options.maximumColumns
+        )
         let desiredCellWidth = min(
             options.maximumCellWidth,
             max(
                 options.minimumCellWidth,
-                min(options.preferredCellWidth, StripRenderOptions.hardMaximumStripWidth / cells.count)
+                min(options.preferredCellWidth, StripRenderOptions.hardMaximumStripWidth / grid.columns)
             )
         )
         let actualCellWidth = min(
             desiredCellWidth,
-            StripRenderOptions.hardMaximumStripWidth / cells.count
+            StripRenderOptions.hardMaximumStripWidth / grid.columns
         )
-        let stripWidth = actualCellWidth * cells.count
+        let stripWidth = actualCellWidth * grid.columns
         let frameURLs = cells.map { resolve(path: $0.framePath, relativeTo: framesBaseURL) }
         let geometries = try frameURLs.map { try imageGeometry(at: $0) }
         let imageHeights = geometries.map { geometry in
@@ -116,7 +135,8 @@ public enum StripRenderer {
         let imageAreaHeight = imageHeights.max() ?? 1
         let captionLineHeight = 18
         let captionHeight = 12 + 17 + 5 + options.maximumCaptionLines * captionLineHeight + 12
-        let stripHeight = imageAreaHeight + captionHeight
+        let cellHeight = imageAreaHeight + captionHeight
+        let stripHeight = cellHeight * grid.rows
 
         guard let context = CGContext(
             data: nil,
@@ -136,12 +156,20 @@ public enum StripRenderer {
         context.interpolationQuality = .high
 
         for (index, cell) in cells.enumerated() {
-            let x = index * actualCellWidth
+            let column = index % grid.columns
+            let rowFromTop = index / grid.columns
+            let x = column * actualCellWidth
+            let rowY = (grid.rows - rowFromTop - 1) * cellHeight
             let frameHeight = imageHeights[index]
-            let frameY = captionHeight + (imageAreaHeight - frameHeight) / 2
+            let frameY = rowY + captionHeight + (imageAreaHeight - frameHeight) / 2
 
             context.setFillColor(CGColor(gray: 0.055, alpha: 1))
-            context.fill(CGRect(x: x, y: captionHeight, width: actualCellWidth, height: imageAreaHeight))
+            context.fill(CGRect(
+                x: x,
+                y: rowY + captionHeight,
+                width: actualCellWidth,
+                height: imageAreaHeight
+            ))
             let thumbnailSize = max(actualCellWidth, frameHeight) * 2
             let image = try loadImage(at: frameURLs[index], maximumPixelSize: thumbnailSize)
             context.draw(
@@ -150,11 +178,16 @@ public enum StripRenderer {
             )
 
             context.setFillColor(CGColor(red: 0.976, green: 0.973, blue: 0.957, alpha: 1))
-            context.fill(CGRect(x: x, y: 0, width: actualCellWidth, height: captionHeight))
+            context.fill(CGRect(x: x, y: rowY, width: actualCellWidth, height: captionHeight))
             drawCaption(
                 cell: cell,
                 context: context,
-                rect: CGRect(x: x + 12, y: 0, width: actualCellWidth - 24, height: captionHeight),
+                rect: CGRect(
+                    x: x + 12,
+                    y: rowY,
+                    width: actualCellWidth - 24,
+                    height: captionHeight
+                ),
                 maximumLines: options.maximumCaptionLines,
                 lineHeight: CGFloat(captionLineHeight)
             )
@@ -163,9 +196,9 @@ public enum StripRenderer {
             context.setLineWidth(1)
             context.stroke(CGRect(
                 x: CGFloat(x) + 0.5,
-                y: 0.5,
+                y: CGFloat(rowY) + 0.5,
                 width: CGFloat(actualCellWidth - 1),
-                height: CGFloat(stripHeight - 1)
+                height: CGFloat(cellHeight - 1)
             ))
         }
 

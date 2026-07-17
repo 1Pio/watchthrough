@@ -40,18 +40,20 @@ public enum TranscriptFiles {
             }
         }
 
-        let timedSegments = transcript.segments.compactMap { segment -> (String, Double?, Double?)? in
+        let timedSegments = transcript.segments.compactMap { segment -> (String, Double?, Double?, String?)? in
             let text = cleanText(segment.text)
             guard !text.isEmpty else { return nil }
-            return (text, segment.startSeconds, segment.endSeconds)
+            return (text, segment.startSeconds, segment.endSeconds, segment.speaker)
         }
         if !timedSegments.isEmpty,
            let segmentTexts = completeTimedTexts(
                timedSegments.map(\.0),
                canonicalText: canonicalText
            ) {
+            let showSpeakers = Set(timedSegments.compactMap(\.3)).count > 1
             return zip(timedSegments, segmentTexts).map { segment, text in
-                "\(timeSpan(start: segment.1, end: segment.2)) \(text)"
+                let speaker = showSpeakers ? segment.3.map { " [\($0)]" } ?? "" : ""
+                return "\(timeSpan(start: segment.1, end: segment.2))\(speaker) \(text)"
             }
             .joined(separator: "\n")
         }
@@ -66,6 +68,10 @@ public enum TranscriptFiles {
         var groups: [[TranscriptWord]] = []
         var current: [TranscriptWord] = []
         var semanticTokenCount = 0
+        var currentSpeaker: String?
+        let showSpeakers = Set(words.compactMap { word in
+            word.type == .spacing ? nil : word.speaker
+        }).count > 1
 
         func flush() {
             guard !current.isEmpty else { return }
@@ -75,6 +81,7 @@ public enum TranscriptFiles {
             }
             current.removeAll(keepingCapacity: true)
             semanticTokenCount = 0
+            currentSpeaker = nil
         }
 
         for word in words {
@@ -86,9 +93,18 @@ public enum TranscriptFiles {
                 flush()
             }
 
+            if showSpeakers,
+               word.type != .spacing,
+               let speaker = word.speaker,
+               let activeSpeaker = currentSpeaker,
+               speaker != activeSpeaker {
+                flush()
+            }
+
             current.append(word)
             if word.type != .spacing, !word.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 semanticTokenCount += 1
+                if let speaker = word.speaker { currentSpeaker = speaker }
             }
             if isSentenceEnding(word.text) {
                 flush()
@@ -112,7 +128,14 @@ public enum TranscriptFiles {
                 start: hasValidTiming ? timed.map(\.startSeconds).min() : nil,
                 end: hasValidTiming ? timed.map(\.endSeconds).max() : nil
             )
-            return "\(timestamp) \(text)"
+            let labels = timed.map(\.speaker)
+            let knownLabels = Set(labels.compactMap { $0 })
+            let speaker = showSpeakers
+                && labels.allSatisfy { $0 != nil }
+                && knownLabels.count == 1
+                ? knownLabels.first.map { " [\($0)]" } ?? ""
+                : ""
+            return "\(timestamp)\(speaker) \(text)"
         }
     }
 

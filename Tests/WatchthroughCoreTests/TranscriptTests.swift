@@ -150,6 +150,60 @@ final class TranscriptTests: XCTestCase {
         )
     }
 
+    func testReadableTranscriptPreservesAttributionWhenSpeakersChange() throws {
+        let transcript = CanonicalTranscript(
+            provider: "fixture",
+            timingPrecision: .word,
+            speakersAvailable: true,
+            text: "Hello there. Hi back.",
+            words: [
+                TranscriptWord(id: "w1", text: "Hello", startSeconds: 0.1, endSeconds: 0.3, speaker: "S1"),
+                TranscriptWord(id: "w2", text: "there.", startSeconds: 0.3, endSeconds: 0.6, speaker: "S1"),
+                TranscriptWord(id: "w3", text: "Hi", startSeconds: 0.7, endSeconds: 0.9, speaker: "S2"),
+                TranscriptWord(id: "w4", text: "back.", startSeconds: 0.9, endSeconds: 1.1, speaker: "S2"),
+            ]
+        )
+        let output = temporaryDirectory.appendingPathComponent("speakers.txt")
+
+        try TranscriptFiles.writeText(transcript, to: output)
+
+        XCTAssertEqual(
+            try String(contentsOf: output, encoding: .utf8),
+            """
+            [00:00.100 --> 00:00.600] [S1] Hello there.
+            [00:00.700 --> 00:01.100] [S2] Hi back.
+
+            """
+        )
+    }
+
+    func testReadableTranscriptDoesNotAttributePartiallyUnlabeledLine() throws {
+        let transcript = CanonicalTranscript(
+            provider: "fixture",
+            timingPrecision: .word,
+            speakersAvailable: true,
+            text: "Unknown hello. Named speaker.",
+            words: [
+                TranscriptWord(id: "w1", text: "Unknown", startSeconds: 0.1, endSeconds: 0.3),
+                TranscriptWord(id: "w2", text: "hello.", startSeconds: 0.3, endSeconds: 0.6, speaker: "S1"),
+                TranscriptWord(id: "w3", text: "Named", startSeconds: 0.7, endSeconds: 0.9, speaker: "S2"),
+                TranscriptWord(id: "w4", text: "speaker.", startSeconds: 0.9, endSeconds: 1.1, speaker: "S2"),
+            ]
+        )
+        let output = temporaryDirectory.appendingPathComponent("partially-unlabeled.txt")
+
+        try TranscriptFiles.writeText(transcript, to: output)
+
+        XCTAssertEqual(
+            try String(contentsOf: output, encoding: .utf8),
+            """
+            [00:00.100 --> 00:00.600] Unknown hello.
+            [00:00.700 --> 00:01.100] [S2] Named speaker.
+
+            """
+        )
+    }
+
     func testReadableTranscriptPrefersCompleteWordStreamOverPartialSegments() throws {
         let transcript = CanonicalTranscript(
             provider: "fixture",

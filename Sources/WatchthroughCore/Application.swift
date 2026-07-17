@@ -1024,7 +1024,7 @@ private extension WatchthroughApplication {
 
 // MARK: - Status
 
-private extension WatchthroughApplication {
+extension WatchthroughApplication {
     func status(_ options: StatusOptions) -> StatusResponse {
         var details: [String: String] = [
             "version": WatchthroughVersion.current,
@@ -1083,62 +1083,102 @@ private extension WatchthroughApplication {
             warnings.append("\(dotenvURL.path) is readable beyond its owner; use chmod 600 or macOS Keychain.")
         }
 
+        if let ytDLP = Tooling.find("yt-dlp") {
+            details["yt_dlp"] = toolVersion(ytDLP.path, arguments: ["--version"])
+            details["yt_dlp_path"] = ytDLP.path
+        } else {
+            details["yt_dlp"] = "not detected (optional)"
+        }
+        if let runtime = detectedYouTubeJavaScriptRuntime() {
+            details["youtube_js_runtime"] = runtime.version
+            details["youtube_js_runtime_path"] = runtime.path
+        } else {
+            details["youtube_js_runtime"] = "not detected (optional)"
+        }
+
         if let requestedAnalysis = options.analysis {
             let analysis = requestedAnalysis.standardizedFileURL.resolvingSymlinksInPath()
-            artifacts["manifest"] = analysis.appendingPathComponent("manifest.json").path
             details["analysis"] = analysis.path
             do {
-                try PathSafety.validateExistingAnalysisRoot(analysis)
                 let prepareLock = siblingLock(for: analysis)
                 try PathSafety.validateAnalysisLock(prepareLock, for: analysis)
-                details["preparation_lock"] = lockActivity(at: prepareLock)
-                let analysisLock = try ExclusiveFileLock.acquireShared(at: prepareLock)
-                defer { analysisLock.unlock() }
-
-                let context = try loadAnalysis(at: analysis, verifyFullHash: true)
-                details["analysis_state"] = "complete and reusable"
-                details["source_sha256"] = context.manifest.source.sha256
-                details["decoded_frames"] = String(context.frames.count)
-                details["transcript_provider"] = context.manifest.transcript.provider ?? "unavailable"
-                details["timing_precision"] = context.manifest.transcript.timingPrecision.rawValue
-                details["transcript_language"] = context.manifest.transcript.language ?? "unknown"
-                details["speakers_available"] = context.manifest.transcript.speakersAvailable.map { String($0) } ?? "unknown"
-                details["overview_frames"] = String(context.manifest.visual.overviewFrames)
-                details["visual_change_candidates"] = String(context.manifest.visual.eventCount)
-
-                let overviewURL = try requiredArtifact(context.manifest.visual.overviewPacketPath, under: analysis)
-                let overview = try loadPacket(at: overviewURL, root: overviewURL.deletingLastPathComponent())
-                guard overview.cells.count == context.manifest.visual.overviewFrames,
-                      overview.cells.first?.ordinal == context.frames.first?.ordinal,
-                      overview.cells.last?.ordinal == context.frames.last?.ordinal else {
-                    throw WatchthroughFailure(.operation, "overview coverage does not match the manifest and decoded endpoints")
-                }
-                artifacts["overview"] = overviewURL.path
-
-                let eventsURL = try requiredArtifact(context.manifest.visual.eventsPath, under: analysis)
-                let events = try decodeEvents(at: eventsURL)
-                guard events.events.count == context.manifest.visual.eventCount else {
-                    throw WatchthroughFailure(.operation, "visual-change candidate count does not match the manifest")
-                }
-                artifacts["events"] = eventsURL.path
-                artifacts["frame_index"] = try requiredArtifact(
-                    context.manifest.visual.frameIndexPath,
-                    under: analysis
-                ).path
-                if let transcriptPath = context.manifest.transcript.path {
-                    artifacts["transcript"] = try requiredArtifact(transcriptPath, under: analysis).path
-                }
-                if let textPath = context.manifest.transcript.textPath {
-                    artifacts["transcript_text"] = try requiredArtifact(textPath, under: analysis).path
-                }
-
+                let preparationLock = preparationLockActivity(at: prepareLock)
                 let temporary = incompleteTemporaryArtifacts(around: analysis)
+                details["preparation_lock"] = preparationLock
                 details["incomplete_temporary_artifacts"] = temporary.isEmpty
                     ? "none"
                     : temporary.joined(separator: ",")
-                if !temporary.isEmpty {
-                    warnings.append("Incomplete tool-owned temporary artifacts exist; inspect them before deciding whether to remove them.")
+
+                let destinationExists = FileManager.default.fileExists(atPath: analysis.path)
+                if preparationLock == "active" {
+                    details["analysis_state"] = "preparing"
+                    warnings.append("Preparation is active; continue or poll the original process instead of starting another analysis.")
+                    if exit == .success { exit = .operation }
+                } else if !destinationExists {
+                    switch preparationLock {
+                    case "not active" where !temporary.isEmpty:
+                        details["analysis_state"] = "incomplete"
+                        warnings.append("Preparation is not active, but incomplete tool-owned temporary artifacts exist; inspect them without deleting or retrying automatically.")
+                    case "not active":
+                        details["analysis_state"] = "missing"
+                        warnings.append("Analysis destination is missing and no active preparation or matching temporary artifact was found.")
+                    default:
+                        details["analysis_state"] = "invalid"
+                        warnings.append("Preparation lock activity could not be determined safely.")
+                    }
+                    if exit == .success { exit = .operation }
+                } else {
+                    try PathSafety.validateExistingAnalysisRoot(analysis)
+                    let analysisLock = try ExclusiveFileLock.acquireShared(at: prepareLock)
+                    defer { analysisLock.unlock() }
+
+                    let context = try loadAnalysis(at: analysis, verifyFullHash: true)
+                    artifacts["manifest"] = analysis.appendingPathComponent("manifest.json").path
+                    details["analysis_state"] = "complete and reusable"
+                    details["source_sha256"] = context.manifest.source.sha256
+                    details["decoded_frames"] = String(context.frames.count)
+                    details["transcript_provider"] = context.manifest.transcript.provider ?? "unavailable"
+                    details["timing_precision"] = context.manifest.transcript.timingPrecision.rawValue
+                    details["transcript_language"] = context.manifest.transcript.language ?? "unknown"
+                    details["speakers_available"] = context.manifest.transcript.speakersAvailable.map { String($0) } ?? "unknown"
+                    details["overview_frames"] = String(context.manifest.visual.overviewFrames)
+                    details["visual_change_candidates"] = String(context.manifest.visual.eventCount)
+
+                    let overviewURL = try requiredArtifact(context.manifest.visual.overviewPacketPath, under: analysis)
+                    let overview = try loadPacket(at: overviewURL, root: overviewURL.deletingLastPathComponent())
+                    guard overview.cells.count == context.manifest.visual.overviewFrames,
+                          overview.cells.first?.ordinal == context.frames.first?.ordinal,
+                          overview.cells.last?.ordinal == context.frames.last?.ordinal else {
+                        throw WatchthroughFailure(.operation, "overview coverage does not match the manifest and decoded endpoints")
+                    }
+                    artifacts["overview"] = overviewURL.path
+
+                    let eventsURL = try requiredArtifact(context.manifest.visual.eventsPath, under: analysis)
+                    let events = try decodeEvents(at: eventsURL)
+                    guard events.events.count == context.manifest.visual.eventCount else {
+                        throw WatchthroughFailure(.operation, "visual-change candidate count does not match the manifest")
+                    }
+                    artifacts["events"] = eventsURL.path
+                    artifacts["frame_index"] = try requiredArtifact(
+                        context.manifest.visual.frameIndexPath,
+                        under: analysis
+                    ).path
+                    if let transcriptPath = context.manifest.transcript.path {
+                        artifacts["transcript"] = try requiredArtifact(transcriptPath, under: analysis).path
+                    }
+                    if let textPath = context.manifest.transcript.textPath {
+                        artifacts["transcript_text"] = try requiredArtifact(textPath, under: analysis).path
+                    }
+
+                    if !temporary.isEmpty {
+                        warnings.append("Incomplete tool-owned temporary artifacts exist; inspect them before deciding whether to remove them.")
+                    }
                 }
+            } catch let failure as WatchthroughFailure where failure.message.contains("already being written") {
+                details["analysis_state"] = "preparing"
+                details["preparation_lock"] = "active"
+                warnings.append("Preparation is active; continue or poll the original process instead of starting another analysis.")
+                if exit == .success { exit = .operation }
             } catch {
                 details["analysis_state"] = "invalid"
                 warnings.append(errorMessage(error))
@@ -1162,6 +1202,7 @@ private extension WatchthroughApplication {
             "MacParakeet: \(details["macparakeet"] ?? "unavailable")",
             "Named adapters: \(details["named_adapters"] ?? "none")",
             "ElevenLabs: \(details["elevenlabs_credential"] ?? "not configured (optional)")",
+            "YouTube tools: yt-dlp \(details["yt_dlp"] ?? "not detected (optional)"), JavaScript \(details["youtube_js_runtime"] ?? "not detected (optional)")",
         ]
         if options.analysis != nil {
             human.append("Analysis: \(details["analysis_state"] ?? "invalid")")
@@ -1287,12 +1328,12 @@ private extension WatchthroughApplication {
 
 // MARK: - Small helpers
 
-private struct ApplicationResponse {
+struct ApplicationResponse {
     var result: CommandResult
     var human: [String]
 }
 
-private struct StatusResponse {
+struct StatusResponse {
     var response: ApplicationResponse
     var exit: WatchthroughExit
 }
@@ -1428,13 +1469,13 @@ private extension WatchthroughApplication {
             .appendingPathComponent(".\(destination.lastPathComponent).lock")
     }
 
-    func lockActivity(at url: URL) -> String {
+    func preparationLockActivity(at url: URL) -> String {
         guard FileManager.default.fileExists(atPath: url.path) else { return "not active" }
         do {
-            let lock = try ExclusiveFileLock.acquire(at: url)
+            let lock = try ExclusiveFileLock.acquireShared(at: url)
             lock.unlock()
             return "not active"
-        } catch let failure as WatchthroughFailure where failure.message.contains("already being") {
+        } catch let failure as WatchthroughFailure where failure.message.contains("already being written") {
             return "active"
         } catch {
             return "unknown"
@@ -1458,6 +1499,22 @@ private extension WatchthroughApplication {
 
     func toolVersion(_ executable: String, arguments: [String]) -> String {
         (try? Tooling.version(of: executable, arguments: arguments)) ?? "available (version unavailable)"
+    }
+
+    func detectedYouTubeJavaScriptRuntime() -> (name: String, path: String, version: String)? {
+        for name in ["deno", "node", "qjs"] {
+            guard let executable = Tooling.find(name) else { continue }
+            let rawVersion = toolVersion(executable.path, arguments: ["--version"])
+            let displayVersion = rawVersion.lowercased().hasPrefix(name)
+                ? rawVersion
+                : "\(name) \(rawVersion)"
+            return (
+                name,
+                executable.path,
+                displayVersion
+            )
+        }
+        return nil
     }
 
     func platformDescription() -> String {

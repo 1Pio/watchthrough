@@ -6,8 +6,9 @@ Load this only for a YouTube input or when YouTube page context is materially re
 
 - Analyze only material the user is authorized to access.
 - Require user-installed yt-dlp plus FFmpeg/FFprobe. Current YouTube extraction
-  also needs a supported JavaScript runtime. Use an already installed runtime,
-  such as Node, explicitly.
+  also needs a supported JavaScript runtime. Read `yt_dlp` and
+  `youtube_js_runtime` from `watchthrough --json status`; prefer an already
+  installed Deno, which yt-dlp currently recommends and enables by default.
 - For non-official yt-dlp packages, ensure the local installation also includes
   the matching `yt-dlp-ejs` component. Keep remote components disabled so the
   acquisition command never downloads executable support code implicitly.
@@ -22,7 +23,7 @@ Create an explicit working folder outside the public repository. Prevent playlis
 Inspect metadata first:
 
 ~~~bash
-yt-dlp --ignore-config --no-playlist --no-js-runtimes --js-runtimes node \
+yt-dlp --ignore-config --no-playlist --no-js-runtimes --js-runtimes deno \
   --no-remote-components \
   --skip-download --dump-single-json "URL"
 ~~~
@@ -30,7 +31,7 @@ yt-dlp --ignore-config --no-playlist --no-js-runtimes --js-runtimes node \
 Acquire one useful source copy without forcing a constant frame rate:
 
 ~~~bash
-yt-dlp --ignore-config --no-playlist --no-js-runtimes --js-runtimes node \
+yt-dlp --ignore-config --no-playlist --no-js-runtimes --js-runtimes deno \
   --no-remote-components \
   --write-info-json --write-description --write-thumbnail \
   --write-subs --write-auto-subs --sub-langs "en" \
@@ -39,6 +40,10 @@ yt-dlp --ignore-config --no-playlist --no-js-runtimes --js-runtimes node \
   -o "/explicit/folder/source.%(ext)s" \
   "URL"
 ~~~
+
+If status detects Node rather than Deno, substitute `node` explicitly. Tool detection does not prove EJS or current site compatibility, so let the metadata probe finish before acquisition. Keep remote components disabled.
+
+Metadata inspection and acquisition may yield a host execution session before yt-dlp exits. Preserve and poll that same session until its final exit code and JSON/output arrive. Partial progress is not completion, and an apparent stall is not a reason to start another download folder.
 
 Replace `en` with one exact caption track chosen from the inspected metadata.
 Do not request every translated caption: it adds little evidence, can trigger
@@ -86,3 +91,5 @@ Prepare the verified local media using sufficient local transcription first. Kee
 Cloud Scribe is optional and may be selected only after the user explicitly authorizes the upload and cost boundary. It is never an automatic fallback.
 
 Promote one selected YouTube caption to a discoverable `source.vtt` or `source.srt` only as the strict last fallback, after sufficient local transcription is unavailable or has failed and cloud transcription is not authorized, appropriate, available, or sufficient. First inspect its provenance, language, timing, and text quality. Retain the original language-qualified file, record that the promoted transcript is a YouTube caption, then select `--transcriber sidecar` explicitly. Never describe an automatic caption as creator-authored.
+
+After reading the full local transcript, use a retained manual caption as bounded cross-check evidence for material negations, proper names, numbers, quotations, technical terms, and contradictions with visible text. Automatic captions are weaker corroboration. Record a correction and its provenance without silently replacing the local canonical transcript or promoting the caption to the normal transcription route.

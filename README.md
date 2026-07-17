@@ -4,6 +4,8 @@ watchthrough is a small local command and agent skill for understanding video as
 
 It prepares a local video into a reusable folder containing an honest transcript, sparse beginning-to-tail visual coverage, likely visual-change hints, and targeted captioned strips. An AI agent can scan broadly, inspect exact frames or dense ranges, delegate independent sections, and curate useful knowledge without putting a whole video into one context.
 
+Captioned sheets use a compact grid of at most five columns so broad coverage remains readable without changing the bounded 15-cell default.
+
 The CLI does deterministic media work. The bundled skill decides what matters, follows sources, and hands curated knowledge to Obsidian or another skill.
 
 ## Deliberately small
@@ -43,6 +45,8 @@ Use global --json for the stable agent result contract:
 watchthrough --json prepare "/path/video.mp4"
 ~~~
 
+`status ANALYSIS` reports `complete and reusable`, `preparing`, `incomplete`, `missing`, or `invalid`. These states let an agent recover the original destination after a long host session is yielded or lost without creating duplicate analyses or deleting staging evidence. Global status also reports optional detected yt-dlp and JavaScript-runtime versions; they never affect core readiness.
+
 YouTube acquisition is intentionally documented in [references/youtube.md](references/youtube.md) instead of being coupled to the core command.
 
 ## Transcription
@@ -59,6 +63,8 @@ ElevenLabs Scribe v2 is available only through explicit --transcriber scribe. It
 Downloaded YouTube captions remain language-qualified and non-auto-discoverable. They are not the normal transcript route. Use sufficient local transcription first, use Scribe only with explicit authorization, and promote a vetted YouTube caption to a discoverable sidecar only as the strict last fallback described in [references/youtube.md](references/youtube.md).
 
 The bundled skill has a transcript ownership gate. For one or a few reasonably sized videos, the main agent reads every clean transcript in full before detailed visual or surrounding-context work. For too many or unusually long videos, one transcript-owning subagent reads each full video transcript and returns a complete source note, which the main agent assimilates before visual delegation.
+
+The clean `transcript.txt` keeps timestamps and adds speaker labels when multiple detected speakers make attribution useful. Canonical JSON remains the full-fidelity provider record.
 
 ## Development
 

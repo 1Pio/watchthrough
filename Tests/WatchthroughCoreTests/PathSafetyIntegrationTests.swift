@@ -70,11 +70,100 @@ final class PathSafetyIntegrationTests: XCTestCase {
         ]))
         XCTAssertFalse(FileManager.default.fileExists(atPath: missingParent.path))
 
-        XCTAssertEqual(
-            try WatchthroughApplication().run(arguments: ["status", missing.path]),
-            .operation
-        )
+        let status = WatchthroughApplication().status(StatusOptions(analysis: missing))
+        XCTAssertEqual(status.exit, .operation)
+        XCTAssertEqual(status.response.result.details["analysis_state"], "missing")
+        XCTAssertEqual(status.response.result.details["preparation_lock"], "not active")
+        XCTAssertEqual(status.response.result.details["incomplete_temporary_artifacts"], "none")
         XCTAssertFalse(FileManager.default.fileExists(atPath: missingParent.path))
+    }
+
+    func testStatusReportsActivePreparationBeforeDestinationExists() throws {
+        let analysis = temporaryDirectory.appendingPathComponent("preparing.watchthrough", isDirectory: true)
+        let lock = try ExclusiveFileLock.acquire(
+            at: temporaryDirectory.appendingPathComponent(".preparing.watchthrough.lock")
+        )
+        defer { lock.unlock() }
+
+        let status = WatchthroughApplication().status(StatusOptions(analysis: analysis))
+
+        XCTAssertEqual(status.exit, .operation)
+        XCTAssertFalse(status.response.result.ok)
+        XCTAssertEqual(status.response.result.details["analysis_state"], "preparing")
+        XCTAssertEqual(status.response.result.details["preparation_lock"], "active")
+        XCTAssertEqual(status.response.result.details["incomplete_temporary_artifacts"], "none")
+    }
+
+    func testStatusReportsInactivePreparationArtifactAsIncomplete() throws {
+        let analysis = temporaryDirectory.appendingPathComponent("incomplete.watchthrough", isDirectory: true)
+        let staging = try ArtifactStaging.temporarySibling(for: analysis)
+
+        let status = WatchthroughApplication().status(StatusOptions(analysis: analysis))
+
+        XCTAssertEqual(status.exit, .operation)
+        XCTAssertEqual(status.response.result.details["analysis_state"], "incomplete")
+        XCTAssertEqual(status.response.result.details["preparation_lock"], "not active")
+        XCTAssertEqual(
+            status.response.result.details["incomplete_temporary_artifacts"],
+            staging.lastPathComponent
+        )
+    }
+
+    func testStatusDoesNotTreatInactivePersistentLockAsPreparation() throws {
+        let analysis = temporaryDirectory.appendingPathComponent("missing.watchthrough", isDirectory: true)
+        let lock = try ExclusiveFileLock.acquire(
+            at: temporaryDirectory.appendingPathComponent(".missing.watchthrough.lock")
+        )
+        lock.unlock()
+
+        let status = WatchthroughApplication().status(StatusOptions(analysis: analysis))
+
+        XCTAssertEqual(status.exit, .operation)
+        XCTAssertEqual(status.response.result.details["analysis_state"], "missing")
+        XCTAssertEqual(status.response.result.details["preparation_lock"], "not active")
+        XCTAssertFalse(status.response.result.warnings.contains { $0.lowercased().contains("stale") })
+    }
+
+    func testStatusKeepsPresentInvalidAndCompleteStatesDistinct() throws {
+        let invalid = temporaryDirectory.appendingPathComponent("invalid.watchthrough", isDirectory: true)
+        try FileManager.default.createDirectory(at: invalid, withIntermediateDirectories: false)
+        let invalidStatus = WatchthroughApplication().status(StatusOptions(analysis: invalid))
+        XCTAssertEqual(invalidStatus.exit, .operation)
+        XCTAssertEqual(invalidStatus.response.result.details["analysis_state"], "invalid")
+
+        let source = temporaryDirectory.appendingPathComponent("status-source.mkv")
+        try makeVideo(at: source)
+        let complete = temporaryDirectory.appendingPathComponent("complete.watchthrough", isDirectory: true)
+        _ = try WatchthroughApplication().run(arguments: [
+            "prepare", source.path,
+            "--out", complete.path,
+            "--transcriber", "none",
+        ])
+        let completeStatus = WatchthroughApplication().status(StatusOptions(analysis: complete))
+        XCTAssertEqual(completeStatus.exit, .success)
+        XCTAssertTrue(completeStatus.response.result.ok)
+        XCTAssertEqual(
+            completeStatus.response.result.details["analysis_state"],
+            "complete and reusable"
+        )
+
+        let writer = try ExclusiveFileLock.acquire(
+            at: temporaryDirectory.appendingPathComponent(".complete.watchthrough.lock")
+        )
+        let preparingStatus = WatchthroughApplication().status(StatusOptions(analysis: complete))
+        writer.unlock()
+        XCTAssertEqual(preparingStatus.exit, .operation)
+        XCTAssertEqual(preparingStatus.response.result.details["analysis_state"], "preparing")
+        XCTAssertEqual(preparingStatus.response.result.details["preparation_lock"], "active")
+
+        let reader = try ExclusiveFileLock.acquireShared(
+            at: temporaryDirectory.appendingPathComponent(".complete.watchthrough.lock")
+        )
+        defer { reader.unlock() }
+        let readableStatus = WatchthroughApplication().status(StatusOptions(analysis: complete))
+        XCTAssertEqual(readableStatus.exit, .success)
+        XCTAssertEqual(readableStatus.response.result.details["analysis_state"], "complete and reusable")
+        XCTAssertEqual(readableStatus.response.result.details["preparation_lock"], "not active")
     }
 
     func testRefreshRefusesUnownedDestinationWithoutReplacingIt() throws {

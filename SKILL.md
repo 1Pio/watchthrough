@@ -11,18 +11,24 @@ Use the watchthrough command to make video evidence navigable. The command extra
 
 1. Establish the user’s question and desired output.
 2. Resolve every input to a verified local video. For YouTube, read [references/youtube.md](references/youtube.md). Do not pass URLs to the CLI.
-3. Run watchthrough --json status, then prepare each source separately:
+3. Run watchthrough --json status. Assign one preparation owner and one intentional analysis path per source, then prepare each source separately:
 
    ~~~bash
    watchthrough --json prepare "/path/source.mp4" [--out "/path/source.watchthrough"]
    ~~~
 
+   Acquisition and preparation can outlive an execution host's first yield window. If the host returns a session identifier or pending state, preserve it and poll that same process until it exits and emits complete JSON. Progress text is not the result. In Codex, continue the same `session_id`; do not launch another command under a new `--out` path.
+
+   If process ownership is lost, run `watchthrough --json status "/path/source.watchthrough"` for the original intended analysis. Reuse `complete and reusable`; wait or reconnect for `preparing`; inspect the reported temporary artifacts without deleting them for `incomplete`; retry the original path only for `missing`; investigate the warning for `invalid`. Use `--refresh` only after a real source, provider, or configuration change. Choose another output path only for a deliberate separate analysis.
+
 4. Check transcript provider, timing precision, and whether the canonical transcript is sufficient. Prefer local transcription. Never select scribe without the user’s explicit cloud/cost choice. For YouTube, downloaded captions are not the normal transcript route and must stay non-discoverable unless the strict fallback in [references/youtube.md](references/youtube.md) is reached.
-5. Complete transcript ownership before detailed visual inspection, surrounding-context research, or visual/research delegation:
+5. Read the entire clean file at the prepare/status result's `artifacts.transcript_text` path before detailed visual inspection, surrounding-context research, or visual/research delegation. Do not guess the path or try an `inspect transcript` selector. If the field is absent, record that the analysis is visual-only.
+
+   Complete transcript ownership as follows:
    - For one or a few reasonably sized videos, the main agent reads each entire clean transcript and writes its source note.
    - For too many or unusually long videos, delegate one transcript-owning subagent per video. Each owner reads that full transcript and returns a complete coverage/source note. The main agent assimilates every note before visual delegation.
    Search and indexing are navigation aids, never substitutes for complete transcript coverage.
-6. Read every overview strip and treat events only as visual-change routing hints:
+6. Open every overview sheet. Read the event index at `artifacts.events` and treat it only as visual-change routing hints. An index scan is not the same as visually opening event packets.
 
    ~~~bash
    watchthrough --json inspect "/path/source.watchthrough" overview
@@ -48,6 +54,14 @@ Use the watchthrough command to make video evidence navigable. The command extra
 - Screencast: sample commands, code changes, menus, errors, and intermediate states more densely.
 - Motion or animation: use short ranges with --every Nf for true decoded-frame steps.
 - Static graphic: prefer one high-resolution timestamp/frame plus surrounding transcript.
+
+When speech introduces a slide, chart, source card, or progressive reveal, locate its stable state with a short range before requesting one exact frame:
+
+~~~bash
+watchthrough --json inspect ANALYSIS 06:47..06:52 --every 500ms --cells 12
+~~~
+
+Open the produced sheet or JPEG before citing it. If it does not itself show the claimed evidence, mark the probe inconclusive and retry a short nearby range. Retain the selected artifact path in the source note.
 
 For highly specific visual delegation, provide that video’s assimilated source note plus enough local transcript context for the question or range. Do not send every full video transcript. If transcript owners are unavailable, the main agent reads the transcripts sequentially before delegating visual or research work.
 

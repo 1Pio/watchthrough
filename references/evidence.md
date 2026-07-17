@@ -29,19 +29,26 @@ For each source:
 1. Record source identity and transcript provenance.
 2. Satisfy the transcript ownership gate and record beginning-to-end coverage.
 3. View all overview strips from beginning through decoded tail.
-4. Review the ranked event list as hints.
+4. Scan the ranked event index as hints. Record separately which event packets were visually opened.
 5. Create a short source note before cross-source synthesis.
 
 A useful source note contains:
 
 ~~~text
 source:
+analysis path:
 question:
 transcript provider and precision:
+transcript text path:
+speaker map when material:
 transcript coverage receipt:
-visual coverage:
+overview sheets opened:
+event index candidate count:
+event packets opened:
+exact or range packets opened:
 key claims:
-visual observations:
+visual observations with artifact paths:
+failed or inconclusive probes:
 referenced sources:
 contradictions or uncertainty:
 follow-up inspections:
@@ -78,7 +85,7 @@ Track:
 
 - Transcript coverage by the main reader or one transcript owner per video, plus timing precision and any explicit unreadable gap.
 - Overview first PTS, last PTS, and largest gap.
-- Candidate events reviewed.
+- Event index candidates scanned, separate from event packet IDs visually opened.
 - Exact frames or ranges inspected.
 - Known gaps, failed extractions, illegible text, or unresolved references.
 
@@ -95,6 +102,8 @@ Use bounded language such as “the complete overview was reviewed with a larges
 
 Keep packets bounded. Split independent ranges rather than generating hundreds of cells in one artifact.
 
+Open every generated sheet or exact JPEG before using it as evidence. A requested timestamp is not proof that the resolved frame contains the intended visual. If a frame lands on a transition, blank reveal, talking head, or unreadable state, record the failed probe and inspect a short surrounding range before selecting a stable frame.
+
 For a highly specific visual subagent, pass the assimilated source note plus enough local transcript context for that question, timestamp, or range. Do not attach every video transcript or make the visual subagent rediscover the source’s spoken argument.
 
 ## Multi-source synthesis
@@ -109,6 +118,18 @@ Finish and assimilate transcript-complete source notes independently before visu
 - Open questions.
 
 Do not use view or like counts as evidence that a claim is correct.
+
+## Compact coverage receipt
+
+Copy deterministic fields instead of estimating them:
+
+1. From `status ANALYSIS`, retain `analysis`, `artifacts.transcript_text`, `details.transcript_provider`, `details.timing_precision`, and `details.speakers_available`.
+2. After reading that full text file, record its first and last readable timestamps and any unreadable gap. This coverage claim belongs to the reader, not the CLI.
+3. From `inspect ANALYSIS overview`, retain `artifacts.packet`, every `artifacts.sheet_N`, `details.frames`, and `details.largest_gap_seconds`. Confirm the packet's first and last cells cover the decoded endpoints.
+4. From `inspect ANALYSIS events`, retain `artifacts.events` and `details.visual_change_candidates`. Record this as an index scan. List separately every `event:ID` packet actually opened.
+5. For exact and range probes, retain the selector plus the produced packet, sheet, or frame path. List failed or inconclusive probes and remaining visual gaps.
+
+Do not write “all candidates reviewed” when only the event index was scanned. Do not omit artifact paths for visuals that materially support the synthesis.
 
 ## Downstream handoff
 

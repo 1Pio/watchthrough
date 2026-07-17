@@ -2,6 +2,15 @@ import XCTest
 @testable import WatchthroughCore
 
 final class RenderTests: XCTestCase {
+    func testContactSheetGridBalancesRowsWithinFiveColumns() {
+        XCTAssertEqual(StripRenderer.gridDimensions(itemCount: 15).columns, 5)
+        XCTAssertEqual(StripRenderer.gridDimensions(itemCount: 15).rows, 3)
+        XCTAssertEqual(StripRenderer.gridDimensions(itemCount: 6).columns, 3)
+        XCTAssertEqual(StripRenderer.gridDimensions(itemCount: 6).rows, 2)
+        XCTAssertEqual(StripRenderer.gridDimensions(itemCount: 3).columns, 3)
+        XCTAssertEqual(StripRenderer.gridDimensions(itemCount: 3).rows, 1)
+    }
+
     func testPacketMarkdownKeepsSubsecondIntervalEvidence() {
         let cell = PacketCell(
             index: 0,
