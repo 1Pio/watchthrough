@@ -4,7 +4,9 @@ A local command and agent skill for understanding video through transcript and
 visual evidence. Prepare a source, read its transcript, inspect the parts that
 matter, and keep a useful source note after disposable artifacts move to Trash.
 
-Version 0.2 makes expensive media work demand-driven. Preparation returns metadata
+Version 0.3 adds native YouTube acquisition, clearly timed sheet captions, complete
+inspection verification, and efficient reuse across a growing study. Expensive
+media work remains demand-driven. Preparation returns metadata
 and the requested local transcript. Overview sheets, change scans, and global
 frame indexing run only when requested. Short dense ranges share one bounded
 decode; selected frames record their observed presentation timestamps. A valid
@@ -28,8 +30,40 @@ into `~/.local/bin` and the skill into `~/.agents/skills/watchthrough`, then che
 readiness. It does not use sudo, edit shell configuration, or download dependencies.
 An existing link to another checkout is reported rather than silently replaced.
 
-There is no daemon, database, Python environment, Node runtime, bundled speech
-model, or automatic upload. Python is used only by optional development benchmarks.
+The local analysis command has no daemon, database, Python environment, bundled
+speech model, or automatic upload. Online acquisition additionally uses yt-dlp
+and an existing supported Deno or Node runtime. Its optional managed downloader
+uses the small official zipimport package with existing CPython >=3.10, or the
+official macOS standalone package when compatible Python is absent. Both include
+matching EJS. No pip install or new Python environment is needed; the installer
+does not fetch either package.
+
+## Acquire a YouTube source
+
+~~~bash
+watchthrough --json acquire "https://www.youtube.com/watch?v=VIDEO_ID" \
+  --out "/path/source-bundle"
+~~~
+
+Follow the returned `artifacts.source` path into `prepare`. The acquisition command
+selects current formats, preserves frame rate and original/default audio preference,
+caps height at 1080 by default, and merges without transcoding. `--height` changes
+the cap. It prefers direct delivery within the same resolution/frame-rate tier.
+It does not assume that AVC or the smallest audio stream is always appropriate.
+
+If the downloader is missing or predates the tested client fixes, repeat the
+command with `--update-downloader`. This explicitly fetches the current official
+release package, checks its published SHA256 and version, and activates a separate
+managed copy while keeping the previous one. The system's installed yt-dlp remains
+untouched. Normal acquisition does not install or update executable code.
+
+Repeat the same URL, options, and output path after an interruption to resume.
+Completed bundles are verified and reused without contacting YouTube or starting
+the downloader. An explicit update flag still performs the requested tool update.
+The returned context and description files contain useful creator provenance;
+signed stream URLs, request inventories, cookies, and downloaded captions are not
+part of the normal bundle. See [references/youtube.md](references/youtube.md) for
+source research, dependency overrides, and the caption fallback policy.
 
 ## Ask for evidence as needed
 
@@ -58,6 +92,12 @@ Overview defaults to 12 images at a 720-pixel long edge. Targeted probes default
 `--sheet-format png` selects lossless sheet encoding. Selected frame files remain
 separately accessible. Images preserve rotation and display aspect ratio.
 
+Sheet captions show nearby speech with its actual timing bounds. Segment-only
+transcripts retain whole-cue bounds; silence and unavailable timing are explicit.
+An ellipsis marks a shortened sheet excerpt. Complete interval text remains in the
+packet Markdown and JSON. Cell sequence labels identify sheet order, not invented
+global frame ordinals.
+
 Media work runs serially with a default two-thread budget per codec/filter pool.
 Low-power mode or serious thermal pressure reduces that budget to one.
 `WATCHTHROUGH_THREADS=1..8` overrides the normal budget. This bounds concurrency;
@@ -83,7 +123,8 @@ automatically promoted to authoritative transcription.
 ## Recover and reuse
 
 `status ANALYSIS` reads readiness without probing unrelated providers or hashing
-the whole source. `status ANALYSIS --verify` performs content verification. Changed
+the whole source. `status ANALYSIS --verify` performs content verification, including
+every completed inspection packet, and reports the verified packet count. Changed
 source metadata invalidates ordinary reuse; changed transcript or rendering inputs
 invalidate affected packets. Packet inventories detect corrupt evidence.
 
@@ -99,7 +140,7 @@ and coverage gaps. Then use actual returned evidence paths:
 
 ~~~bash
 watchthrough --json retain ANALYSIS --note /path/source-note.md \
-  --include inspections/PACKET/packet.json --dossier /path/source.description
+  --include /path/ANALYSIS/inspections/PACKET/packet.json --dossier /path/source.description
 watchthrough --json cleanup ANALYSIS
 watchthrough --json cleanup ANALYSIS --apply
 ~~~
@@ -112,6 +153,10 @@ a checksummed receipt. Selecting a packet also retains its frame and sheet
 dependencies. Summary links must resolve in the snapshot. The skill searches these
 source notes before reprocessing a previously studied video and reuses retained
 evidence when its coverage is sufficient.
+
+`--include` accepts returned absolute artifact paths or paths relative to the same
+analysis. It rejects outside files, traversal, and linked artifacts. Use
+`--dossier` for explicitly selected source context outside the analysis.
 
 Cleanup previews first, then moves only the owned analysis directory to native
 system Trash after verifying a matching snapshot. It preserves the source video
@@ -144,8 +189,13 @@ specialist follow-up work on bounded evidence, documented in
 
 Read [docs/redesign.md](docs/redesign.md) for the baseline findings and acceptance
 contract, and [docs/review.md](docs/review.md) for measured results, iterations,
-reuse decisions, and limitations. Synthetic fixtures and deterministic tests cover
+reuse decisions, and limitations. The [0.3 acquisition and evidence report](docs/acquisition-and-context.md)
+records the chosen improvements and live short-video acceptance; its
+[measurements](docs/acquisition-verification.json) identify the exact packaged binary.
+Synthetic fixtures and deterministic tests cover
 the tested domain; sparse samples never establish exhaustive visual coverage.
 
 Downloaded media, transcripts, provider responses, comments, and personal paths
 must not enter this public repository. MIT licensed; see [LICENSE](LICENSE).
+Downloaded yt-dlp packages have their own [upstream licenses](https://github.com/yt-dlp/yt-dlp#licensing),
+including bundled third-party components.

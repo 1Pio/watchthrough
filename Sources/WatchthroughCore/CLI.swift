@@ -9,6 +9,13 @@ public struct PrepareOptions: Equatable, Sendable {
     public var speakers: Bool = false
 }
 
+public struct AcquireOptions: Equatable, Sendable {
+    public var url: String
+    public var output: URL
+    public var height: Int = 1080
+    public var updateDownloader: Bool = false
+}
+
 public struct InspectOptions: Equatable, Sendable {
     public var analysis: URL
     public var selector: InspectionSelector
@@ -40,6 +47,7 @@ public struct CleanupOptions: Equatable, Sendable {
 }
 
 public enum CLICommand: Equatable, Sendable {
+    case acquire(AcquireOptions)
     case prepare(PrepareOptions)
     case inspect(InspectOptions)
     case status(StatusOptions)
@@ -59,6 +67,8 @@ public enum CLIParser {
     watchthrough \(WatchthroughVersion.current)
 
     Usage:
+      watchthrough [--json] acquire URL --out BUNDLE [--height 144...4320]
+        [--update-downloader]
       watchthrough [--json] prepare VIDEO [--out ANALYSIS]
         [--transcriber auto|none|sidecar|macparakeet|scribe|command:NAME]
         [--defer-transcript] [--speakers] [--refresh]
@@ -66,14 +76,16 @@ public enum CLIParser {
         [--width 320...8192] [--samples 2...90] [--sheet-format jpeg|png]
       watchthrough [--json] status [ANALYSIS] [--verify]
       watchthrough [--json] retain ANALYSIS --note FILE [--library DIR]
-        [--include RELATIVE] [--dossier FILE]
+        [--include ARTIFACT] [--dossier FILE]
       watchthrough [--json] cleanup ANALYSIS [--library DIR] [--apply]
 
     Selectors:
       transcript | overview | events | event:E0042 | 12:30.250 | 12:30..12:45 | frame:18720
 
-    The core accepts local video files only. For YouTube, acquire a local copy
-    through references/youtube.md first.
+    acquire downloads one public YouTube video and returns its local source path.
+    --update-downloader explicitly installs/updates a verified managed yt-dlp copy.
+    prepare accepts local files. --include accepts relative or returned absolute
+    paths inside the same analysis. See references/youtube.md for source research.
     """
 
     public static func parse(_ rawArguments: [String]) throws -> CLIInvocation {
@@ -85,7 +97,7 @@ public enum CLIParser {
         }
         arguments.removeFirst()
 
-        if ["prepare", "inspect", "status", "retain", "cleanup"].contains(first),
+        if ["acquire", "prepare", "inspect", "status", "retain", "cleanup"].contains(first),
            arguments.count == 1,
            (arguments[0] == "--help" || arguments[0] == "-h") {
             return CLIInvocation(json: json, command: .help)
@@ -102,6 +114,8 @@ public enum CLIParser {
                 throw usage("version takes no arguments")
             }
             return CLIInvocation(json: json, command: .version)
+        case "acquire":
+            return CLIInvocation(json: json, command: .acquire(try parseAcquire(arguments)))
         case "prepare":
             return CLIInvocation(json: json, command: .prepare(try parsePrepare(arguments)))
         case "inspect":
@@ -117,6 +131,18 @@ public enum CLIParser {
         }
     }
 
+    private static func parseAcquire(_ raw: [String]) throws -> AcquireOptions {
+        var arguments = raw
+        let update = removeFlag("--update-downloader", from: &arguments)
+        let output = try removeValue("--out", from: &arguments)
+        let height = try boundedInteger(removeValue("--height", from: &arguments), flag: "--height", bounds: 144...4320, fallback: 1080)
+        guard arguments.count == 1, let output, !output.isEmpty, !looksLikeURL(output) else {
+            throw usage("acquire requires one YouTube URL and --out LOCAL_BUNDLE")
+        }
+        let video = try YouTubeAcquisition.canonicalVideo(arguments[0])
+        return AcquireOptions(url: video.url, output: fileURL(output), height: height, updateDownloader: update)
+    }
+
     private static func parsePrepare(_ raw: [String]) throws -> PrepareOptions {
         var arguments = raw
         let refresh = removeFlag("--refresh", from: &arguments)
@@ -130,7 +156,7 @@ public enum CLIParser {
         }
         let input = arguments[0]
         if looksLikeURL(input) {
-            throw usage("prepare accepts a local video, not a URL; use references/youtube.md to acquire it")
+            throw usage("prepare accepts a local video; use acquire URL --out BUNDLE and follow artifacts.source first")
         }
         if transcriber != "auto",
            transcriber != "none",

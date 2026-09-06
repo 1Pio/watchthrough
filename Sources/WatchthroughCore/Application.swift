@@ -31,6 +31,12 @@ public struct WatchthroughApplication {
             }
             return .success
 
+        case let .acquire(options):
+            let result = try YouTubeAcquisition.acquire(options)
+            let message = result.reused == true ? "Reused verified local acquisition." : "Acquired and verified local source."
+            try present(ApplicationResponse(result: result, human: [message] + result.artifacts.sorted(by: { $0.key < $1.key }).map { "\($0.key): \($0.value)" }), asJSON: invocation.json)
+            return .success
+
         case let .prepare(options):
             let response = try prepare(options)
             try present(response, asJSON: invocation.json)
@@ -642,7 +648,7 @@ private extension WatchthroughApplication {
             ?? (context.manifest.transcript.path.flatMap { resolveRelative($0, under: context.analysis) }
                 .flatMap { try? FileSHA256.hexDigest(of: $0) } ?? "no-transcript")
         let evidenceKey = "decoded-receipt-v2|\(context.manifest.source.sha256)|\(options.selectorText)|\(identitySampling)|width:\(options.width)"
-        let contentKey = "packet-render-v2|generation:\(context.manifest.completedAt)|\(transcriptFingerprint)|width:\(options.width)|format:\(options.sheetFormat.rawValue)"
+        let contentKey = "packet-render-v3|generation:\(context.manifest.completedAt)|\(transcriptFingerprint)|width:\(options.width)|format:\(options.sheetFormat.rawValue)"
         let identity = inspectionIdentity(selector: options.selectorText, sampling: identitySampling + "|" + contentKey, cells: options.cells)
         let inspections = try PathSafety.ensureInspectionsDirectory(under: context.analysis)
         let destination = try PathSafety.inspectionDestination(named: identity, under: inspections)
@@ -714,22 +720,18 @@ private extension WatchthroughApplication {
     }
 
     func reusableEvidence(fingerprint: String, under inspections: URL, destination: URL) throws -> [PacketEvidenceFrame]? {
-        let entries = try FileManager.default.contentsOfDirectory(at: inspections, includingPropertiesForKeys: [.isDirectoryKey]).sorted { $0.path < $1.path }
-        for root in entries where !root.lastPathComponent.hasPrefix(".") {
-            guard let packet = try? loadPacket(at: root.appendingPathComponent("packet.json"), root: root),
-                  packet.evidenceFingerprint == fingerprint, packet.artifactFingerprints != nil else { continue }
-            try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
-            var evidence: [PacketEvidenceFrame] = []
-            for cell in packet.cells {
-                let original = try requiredArtifact(cell.framePath, under: root)
-                let copy = destination.appendingPathComponent(original.lastPathComponent)
-                try FileManager.default.copyItem(at: original, to: copy)
-                evidence.append(PacketEvidenceFrame(pts: cell.ptsSeconds, url: copy, ordinal: cell.ordinal, localOrdinal: cell.localOrdinal))
-            }
-            progress("Reusing decoded frame evidence; rendering the requested layout...")
-            return evidence
+        guard let (root, packet) = try matchingInspectionPacket(fingerprint: fingerprint, under: inspections,
+            validate: { try loadPacket(at: $0, root: $1) }) else { return nil }
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        var evidence: [PacketEvidenceFrame] = []
+        for cell in packet.cells {
+            let original = try requiredArtifact(cell.framePath, under: root)
+            let copy = destination.appendingPathComponent(original.lastPathComponent)
+            try FileManager.default.copyItem(at: original, to: copy)
+            evidence.append(PacketEvidenceFrame(pts: cell.ptsSeconds, url: copy, ordinal: cell.ordinal, localOrdinal: cell.localOrdinal))
         }
-        return nil
+        progress("Reusing decoded frame evidence; rendering the requested layout...")
+        return evidence
     }
 
     func inspectionResponse(
@@ -875,18 +877,27 @@ extension WatchthroughApplication {
 
         details["elevenlabs_credential"] = "not probed; resolved only for explicit Scribe transcription"
 
-        if let ytDLP = Tooling.find("yt-dlp") {
-            details["yt_dlp"] = toolVersion(ytDLP.path, arguments: ["--version"])
-            details["yt_dlp_path"] = ytDLP.path
-        } else {
-            details["yt_dlp"] = "not detected (optional)"
+        var youtubeIssues: [String] = []
+        do {
+            let downloader = try YouTubeTools.resolveDownloader()
+            details["yt_dlp"] = downloader.version
+            details["yt_dlp_path"] = downloader.artifact.path
+            details["yt_dlp_executable"] = downloader.path.path
+            details["yt_dlp_arguments"] = String(decoding: try StableJSON.encode(downloader.arguments), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        } catch {
+            details["yt_dlp"] = "unavailable for acquisition (optional)"
+            youtubeIssues.append(String(describing: error))
         }
-        if let runtime = detectedYouTubeJavaScriptRuntime() {
+        do {
+            let runtime = try YouTubeTools.javascriptRuntime()
             details["youtube_js_runtime"] = runtime.version
-            details["youtube_js_runtime_path"] = runtime.path
-        } else {
-            details["youtube_js_runtime"] = "not detected (optional)"
+            details["youtube_js_runtime_name"] = runtime.name
+            details["youtube_js_runtime_path"] = runtime.path.path
+        } catch {
+            details["youtube_js_runtime"] = "unavailable for acquisition (optional)"
+            youtubeIssues.append(String(describing: error))
         }
+        details["youtube_acquisition"] = youtubeIssues.isEmpty ? "dependencies ready" : youtubeIssues.joined(separator: " ")
 
         warnings = unique(warnings)
         let result = CommandResult(
@@ -905,6 +916,7 @@ extension WatchthroughApplication {
             "Named adapters: \(details["named_adapters"] ?? "none")",
             "ElevenLabs: \(details["elevenlabs_credential"] ?? "not configured (optional)")",
             "YouTube tools: yt-dlp \(details["yt_dlp"] ?? "not detected (optional)"), JavaScript \(details["youtube_js_runtime"] ?? "not detected (optional)")",
+            "YouTube acquisition: \(details["youtube_acquisition"] ?? "unavailable")",
         ]
         if options.analysis != nil {
             human.append("Analysis: \(details["analysis_state"] ?? "invalid")")
@@ -937,10 +949,13 @@ extension WatchthroughApplication {
                 let lock = try ExclusiveFileLock.acquireShared(at: lockURL)
                 defer { lock.unlock() }
                 let context = try loadAnalysis(at: analysis, verifyFullHash: options.verify)
+                if options.verify {
+                    details["verified_inspection_packets"] = String(try verifyInspectionPackets(under: analysis, manifest: context.manifest))
+                }
                 details.merge(stageDetails(context.manifest)) { _, new in new }
                 details["analysis_state"] = "complete and reusable"
                 details["source_sha256"] = context.manifest.source.sha256
-                details["validation"] = options.verify ? "full source SHA256 and referenced artifact contents" : "source size and high precision modification time; referenced artifact existence"
+                details["validation"] = options.verify ? "full source SHA256, referenced artifacts, and all completed inspection packets" : "source size and high precision modification time; referenced artifact existence"
                 artifacts = analysisArtifacts(manifest: context.manifest, analysis: analysis)
                 warnings += context.manifest.warnings
                 if !temporary.isEmpty { warnings.append("Incomplete stage artifacts are preserved for recovery.") }
@@ -1000,7 +1015,7 @@ private extension WatchthroughApplication {
         try PathSafety.validateExistingAnalysisRoot(analysis)
         guard let manifest = try ManifestStore.read(from: analysis.appendingPathComponent("manifest.json")),
               manifest.schema == WatchthroughVersion.manifestSchema,
-              [WatchthroughVersion.current, "0.1.0"].contains(manifest.toolVersion), manifest.state == "complete" else {
+              [WatchthroughVersion.current, "0.2.0", "0.1.0"].contains(manifest.toolVersion), manifest.state == "complete" else {
             throw WatchthroughFailure(.operation, "analysis manifest is missing, incomplete, or incompatible")
         }
         guard manifest.media.durationSeconds.isFinite, manifest.media.durationSeconds > 0,
@@ -1039,17 +1054,60 @@ private extension WatchthroughApplication {
                     throw WatchthroughFailure(.operation, "frame index count or decoded endpoints do not match manifest")
                 }
             }
-            if !manifest.visual.overviewPacketPath.isEmpty {
-                let url = try requiredArtifact(manifest.visual.overviewPacketPath, under: analysis)
-                let packet = try loadPacket(at: url, root: url.deletingLastPathComponent())
-                guard packet.cells.count == manifest.visual.overviewFrames else { throw WatchthroughFailure(.operation, "overview count does not match manifest") }
-            }
             if !manifest.visual.eventsPath.isEmpty {
                 let events = try decodeEvents(at: requiredArtifact(manifest.visual.eventsPath, under: analysis))
                 guard events.events.count == manifest.visual.eventCount else { throw WatchthroughFailure(.operation, "event count does not match manifest") }
             }
         }
         return AnalysisContext(analysis: analysis, source: source, manifest: manifest)
+    }
+
+    func verifyInspectionPackets(under analysis: URL, manifest: PreparationManifest) throws -> Int {
+        var paths = Set<String>()
+        if !manifest.visual.overviewPacketPath.isEmpty { paths.insert(manifest.visual.overviewPacketPath) }
+        let inspections = analysis.appendingPathComponent("inspections", isDirectory: true)
+        let attributes: [FileAttributeKey: Any]?
+        do {
+            attributes = try FileManager.default.attributesOfItem(atPath: inspections.path)
+        } catch let error as NSError where error.domain == NSCocoaErrorDomain
+            && [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(error.code) {
+            attributes = nil
+        } catch {
+            throw WatchthroughFailure(.operation, "inspection verification failed at inspections: \(errorMessage(error))")
+        }
+        if let attributes {
+            guard attributes[.type] as? FileAttributeType == .typeDirectory else {
+                throw WatchthroughFailure(.operation, "inspection verification failed at inspections: expected an owned directory, not a symbolic link or special file")
+            }
+            for root in try FileManager.default.contentsOfDirectory(at: inspections, includingPropertiesForKeys: nil) {
+                guard root.lastPathComponent.range(of: #"^[a-z0-9][a-z0-9-]{0,41}-[0-9a-f]{8}$"#, options: .regularExpression) != nil else { continue }
+                let relative = "inspections/\(root.lastPathComponent)/packet.json"
+                guard (try FileManager.default.attributesOfItem(atPath: root.path))[.type] as? FileAttributeType == .typeDirectory else {
+                    throw WatchthroughFailure(.operation, "inspection verification failed at \(relative): expected an owned packet directory, not a symbolic link or special file")
+                }
+                paths.insert(relative)
+            }
+        }
+        for relative in paths.sorted() {
+            do {
+                let url = analysis.appendingPathComponent(relative)
+                guard PathSafety.isRegularOwnedFile(url) else {
+                    throw WatchthroughFailure(.operation, "packet JSON is missing or unsafe")
+                }
+                let packet = try loadPacket(at: url, root: url.deletingLastPathComponent())
+                guard packet.sourcePath == manifest.source.path else {
+                    throw WatchthroughFailure(.operation, "packet source does not match the analysis")
+                }
+                if relative == manifest.visual.overviewPacketPath {
+                    guard packet.cells.count == manifest.visual.overviewFrames else {
+                        throw WatchthroughFailure(.operation, "overview count does not match manifest")
+                    }
+                }
+            } catch {
+                throw WatchthroughFailure(.operation, "inspection verification failed at \(relative): \(errorMessage(error)). Preserve this packet and request a fresh inspection layout before relying on it.")
+            }
+        }
+        return paths.count
     }
 
     func readTranscript(_ manifest: PreparationManifest, under analysis: URL) throws -> CanonicalTranscript? {
@@ -1169,6 +1227,31 @@ private final class TranscriptSession {
     }
 }
 
+/// Filter small packet metadata before reading any image bytes. Validation stays
+/// mandatory for every matching candidate; its failure only skips that candidate.
+func matchingInspectionPacket(
+    fingerprint: String,
+    under inspections: URL,
+    validate: (URL, URL) throws -> InspectionPacket
+) throws -> (root: URL, packet: InspectionPacket)? {
+    let entries = try FileManager.default.contentsOfDirectory(at: inspections, includingPropertiesForKeys: nil)
+        .sorted { $0.path < $1.path }
+    for root in entries where !root.lastPathComponent.hasPrefix(".") {
+        let url = root.appendingPathComponent("packet.json")
+        guard let header = try? StableJSON.decode(InspectionEvidenceHeader.self, from: url),
+              header.evidenceFingerprint == fingerprint,
+              let packet = try? validate(url, root),
+              packet.evidenceFingerprint == fingerprint,
+              packet.artifactFingerprints != nil else { continue }
+        return (root, packet)
+    }
+    return nil
+}
+
+private struct InspectionEvidenceHeader: Decodable {
+    var evidenceFingerprint: String?
+}
+
 private struct TranscriptPreparation {
     var transcript: CanonicalTranscript?
     var summary: TranscriptSummary
@@ -1227,7 +1310,7 @@ private extension WatchthroughApplication {
             guard PathSafety.isRegularOwnedFile(manifestURL),
                   let manifest = try ManifestStore.read(from: manifestURL),
                   manifest.schema == WatchthroughVersion.manifestSchema,
-                  [WatchthroughVersion.current, "0.1.0"].contains(manifest.toolVersion),
+                  [WatchthroughVersion.current, "0.2.0", "0.1.0"].contains(manifest.toolVersion),
                   manifest.state == "complete",
                   URL(fileURLWithPath: manifest.source.path)
                     .standardizedFileURL
@@ -1314,22 +1397,6 @@ private extension WatchthroughApplication {
 
     func toolVersion(_ executable: String, arguments: [String]) -> String {
         (try? Tooling.version(of: executable, arguments: arguments)) ?? "available (version unavailable)"
-    }
-
-    func detectedYouTubeJavaScriptRuntime() -> (name: String, path: String, version: String)? {
-        for name in ["deno", "node", "qjs"] {
-            guard let executable = Tooling.find(name) else { continue }
-            let rawVersion = toolVersion(executable.path, arguments: ["--version"])
-            let displayVersion = rawVersion.lowercased().hasPrefix(name)
-                ? rawVersion
-                : "\(name) \(rawVersion)"
-            return (
-                name,
-                executable.path,
-                displayVersion
-            )
-        }
-        return nil
     }
 
     func platformDescription() -> String {

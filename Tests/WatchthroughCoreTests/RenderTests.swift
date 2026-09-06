@@ -184,4 +184,65 @@ final class RenderTests: XCTestCase {
         XCTAssertTrue(markdown.contains("regional decoded frame `4` (not a global ordinal)"))
         XCTAssertFalse(markdown.contains("Optional("))
     }
+
+    func testPreviewLabelsMatchSpeechBoundsWhileMarkdownKeepsTheCompleteInterval() {
+        let cell = PacketCell(index: 11, ordinal: nil, ptsSeconds: 3_584.6,
+            intervalStartSeconds: 3_421.667, intervalEndSeconds: 3_584.661, timestamp: "59:44.600",
+            caption: "Earlier portfolio discussion. Final words.", framePath: "frames/tail.jpg",
+            captionPreview: PacketCaptionPreview(text: "Final words.", startSeconds: 3_582,
+                endSeconds: 3_584.5, timingPrecision: .word))
+        let content = StripRenderer.captionContent(for: cell)
+        XCTAssertEqual(content.frameLabel, "Cell 12 · Frame 59:44.600")
+        XCTAssertEqual(content.speechLabel, "Speech 59:42.000 to 59:44.500")
+        XCTAssertEqual(content.body, "Final words.")
+        let packet = InspectionPacket(selector: "overview", sourcePath: "/fixture/video.mp4",
+            rangeStartSeconds: 0, rangeEndSeconds: 3_584.661, sampling: "uniform overview", cellsPerSheet: 15,
+            largestGapSeconds: 0, timingPrecision: .word, cells: [cell], sheets: ["strip-01.jpg"])
+        let markdown = PacketMarkdown.render(packet)
+        XCTAssertTrue(markdown.contains("> Earlier portfolio discussion. Final words."))
+        XCTAssertTrue(markdown.contains("Complete interval captions are listed below."))
+    }
+
+    func testCaptionContentDistinguishesSilentNearbySpeechCoarseCuesAndLegacyIntervals() {
+        var cell = PacketCell(index: 0, ordinal: nil, ptsSeconds: 10, intervalStartSeconds: 0,
+            intervalEndSeconds: 60, timestamp: "00:10.000", caption: "Distant interval words", framePath: "frame.jpg")
+        let legacy = StripRenderer.captionContent(for: cell)
+        XCTAssertEqual(legacy.speechLabel, "Interval speech 00:00.000 to 01:00.000")
+        XCTAssertEqual(legacy.body, cell.caption)
+        cell.captionPreview = PacketCaptionPreview(text: "", timingPrecision: .word)
+        XCTAssertEqual(StripRenderer.captionContent(for: cell).body, "No timed speech within 3 seconds.")
+        cell.captionPreview = PacketCaptionPreview(text: "Full coarse cue", startSeconds: 0, endSeconds: 120,
+            timingPrecision: .segment)
+        XCTAssertEqual(StripRenderer.captionContent(for: cell).speechLabel, "Speech cue 00:00.000 to 02:00.000")
+        cell.captionPreview = PacketCaptionPreview(text: "", timingPrecision: .none)
+        XCTAssertEqual(StripRenderer.captionContent(for: cell).speechLabel, "Speech timing unavailable")
+    }
+
+    func testCaptionPreviewSheetRendersLongCueAndSilentFrameWithinBounds() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("watchthrough-caption-render-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let source = root.appendingPathComponent("source.png")
+        try writePattern(width: 320, height: 180, to: source)
+        let longCue = String(repeating: "This whole source cue has coarse timing and must visibly end with an ellipsis when the sheet runs out of space. ", count: 8)
+        let previews: [PacketCaptionPreview?] = [
+            PacketCaptionPreview(text: "Final words.", startSeconds: 3_582, endSeconds: 3_584.5, timingPrecision: .word),
+            PacketCaptionPreview(text: longCue, startSeconds: 0, endSeconds: 120, timingPrecision: .segment),
+            PacketCaptionPreview(text: "", timingPrecision: .word),
+            nil,
+        ]
+        let cells = previews.enumerated().map { index, preview in
+            PacketCell(index: index, ordinal: nil, ptsSeconds: index == 0 ? 3_584.6 : 10,
+                intervalStartSeconds: 0, intervalEndSeconds: 3_600,
+                timestamp: index == 0 ? "59:44.600" : "00:10.000",
+                caption: "Legacy interval words may be distant from the frame.", framePath: source.path,
+                captionPreview: preview)
+        }
+        let paths = try StripRenderer.render(cells: cells, framesBaseURL: root, destinationDirectory: root,
+            options: StripRenderOptions(format: .png))
+        let image = try XCTUnwrap(CGImageSourceCreateWithURL(paths[0] as CFURL, nil))
+        let properties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(image, 0, nil) as? [CFString: Any])
+        XCTAssertEqual(properties[kCGImagePropertyPixelWidth] as? Int, 1_440)
+        XCTAssertEqual(properties[kCGImagePropertyPixelHeight] as? Int, 338)
+        print("Caption render review: \(paths[0].path)")
+    }
 }

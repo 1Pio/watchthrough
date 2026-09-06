@@ -1,7 +1,7 @@
 import Foundation
 
 public enum WatchthroughVersion {
-    public static let current = "0.2.0"
+    public static let current = "0.3.0"
     public static let resultSchema = "watchthrough.result.v1"
     public static let manifestSchema = "watchthrough.manifest.v1"
     public static let transcriptSchema = "watchthrough.transcript.v1"
@@ -411,6 +411,23 @@ public struct EventIndex: Codable, Equatable, Sendable {
     }
 }
 
+/// Speech near one frame, independent of the complete interval caption.
+/// Empty text has no speech bounds. Segment bounds retain the full source cue.
+public struct PacketCaptionPreview: Codable, Equatable, Sendable {
+    public var text: String
+    public var startSeconds: Double?
+    public var endSeconds: Double?
+    public var timingPrecision: TimingPrecision
+
+    public init(text: String, startSeconds: Double? = nil, endSeconds: Double? = nil,
+                timingPrecision: TimingPrecision) {
+        self.text = text
+        self.startSeconds = startSeconds
+        self.endSeconds = endSeconds
+        self.timingPrecision = timingPrecision
+    }
+}
+
 public struct PacketCell: Codable, Equatable, Sendable {
     public var index: Int
     /// Present only when a complete decoded index established a global ordinal.
@@ -422,11 +439,13 @@ public struct PacketCell: Codable, Equatable, Sendable {
     public var intervalEndSeconds: Double
     public var timestamp: String
     public var caption: String
+    public var captionPreview: PacketCaptionPreview?
     public var framePath: String
 
     public init(index: Int, ordinal: Int?, ptsSeconds: Double, intervalStartSeconds: Double,
                 intervalEndSeconds: Double, timestamp: String, caption: String, framePath: String,
-                ordinalBasis: String? = nil, localOrdinal: Int? = nil) {
+                ordinalBasis: String? = nil, localOrdinal: Int? = nil,
+                captionPreview: PacketCaptionPreview? = nil) {
         self.index = index
         self.ordinal = ordinal
         self.ordinalBasis = ordinalBasis
@@ -436,6 +455,7 @@ public struct PacketCell: Codable, Equatable, Sendable {
         self.intervalEndSeconds = intervalEndSeconds
         self.timestamp = timestamp
         self.caption = caption
+        self.captionPreview = captionPreview
         self.framePath = framePath
     }
 }

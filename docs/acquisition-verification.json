@@ -1,0 +1,222 @@
+{
+  "schema": "watchthrough.acceptance.v1",
+  "date_utc": "2026-09-06",
+  "target": "https://www.youtube.com/watch?v=_6jZlnRsXXQ",
+  "tool_version": "0.3.0",
+  "binary_sha256": "6f5e45859cecc8acfcbfec7c55bfc4afdbb48defb91f504ce669536a70ee992f",
+  "binary_bytes": 2088240,
+  "base_commit": "88dee0574c0a25c8b89d09b651e627c3d7b2e84f",
+  "host": {
+    "platform": "macOS 26.6 (25G72)",
+    "architecture": "arm64",
+    "ffmpeg": "8.1.1",
+    "macparakeet": "2.3.1",
+    "yt_dlp": "2026.08.19",
+    "deno": "2.9.3"
+  },
+  "measurement_method": "One run per listed operation. Wall time is command execution only. CPU includes waited descendants; max_rss_bytes is the highest individual process peak, not concurrent aggregate memory. Filesystem and runtime caches may be warm.",
+  "media": {
+    "audioCodec": "opus",
+    "audioTailSeconds": 275.094,
+    "durationSeconds": 275.101,
+    "fps": 25,
+    "height": 1080,
+    "videoCodec": "av1",
+    "videoTailSeconds": 275.08000000000004,
+    "width": 1920,
+    "size_bytes": 42202326,
+    "sha256": "fa9a66f834d0b8b5ce0a3282491627a836c92719b70e6e1682a6ca1b0fda872f",
+    "format_ids": [
+      "399",
+      "251"
+    ]
+  },
+  "checks": {
+    "swift_tests": 182,
+    "swift_skips": 1,
+    "swift_failures": 0,
+    "swift_suite_seconds": 30.386,
+    "packaged_installer_tests": 1,
+    "packaged_installer_failures": 0,
+    "native_frames_per_probe": 26,
+    "native_probe_spacing_seconds": 0.04,
+    "native_probe_unique_images": 26,
+    "overview_samples_opened": 12,
+    "full_transcript_bytes_read": 5637,
+    "relayout_frame_hashes_identical": true,
+    "all_completed_packets_verified": 5,
+    "event_scan_candidates": 32,
+    "retained_files_after_cleanup_verified": 116,
+    "retained_bytes": 11952878,
+    "resolved_note_links_after_cleanup": 11,
+    "source_sha256_preserved": true,
+    "analysis_moved_to_system_trash": true,
+    "retained_image_reopened": true
+  },
+  "steps": [
+    {
+      "step": "04-r3-cold-setup-and-acquire",
+      "wall_seconds": 11.021963541999867,
+      "cpu_seconds": 2.667866,
+      "max_rss_bytes": 103268352,
+      "exit_code": 0,
+      "ok": true,
+      "reused": false
+    },
+    {
+      "step": "05-r3-resume-earlier-bundle",
+      "wall_seconds": 4.014099249998253,
+      "cpu_seconds": 1.193194,
+      "max_rss_bytes": 96092160,
+      "exit_code": 0,
+      "ok": true,
+      "reused": false
+    },
+    {
+      "step": "06-r3-default-prepare",
+      "wall_seconds": 14.838486167001975,
+      "cpu_seconds": 18.909834000000004,
+      "max_rss_bytes": 2919940096,
+      "exit_code": 0,
+      "ok": true,
+      "reused": false
+    },
+    {
+      "step": "07-r3-overview",
+      "wall_seconds": 1.9922959590003302,
+      "cpu_seconds": 2.525747,
+      "max_rss_bytes": 84672512,
+      "exit_code": 0,
+      "ok": true,
+      "reused": false,
+      "packet_cells": 12,
+      "packet_sheets": 1
+    },
+    {
+      "step": "08-r3-warm-acquire-after-prepare",
+      "wall_seconds": 0.025584792001609458,
+      "cpu_seconds": 0.011467,
+      "max_rss_bytes": 12238848,
+      "exit_code": 0,
+      "ok": true,
+      "reused": true
+    },
+    {
+      "step": "09-r3-native-motion",
+      "wall_seconds": 0.29630270800043945,
+      "cpu_seconds": 0.443708,
+      "max_rss_bytes": 106086400,
+      "exit_code": 0,
+      "ok": true,
+      "reused": false,
+      "packet_cells": 26,
+      "packet_sheets": 2
+    },
+    {
+      "step": "10-r3-detail-still",
+      "wall_seconds": 0.1758492919980199,
+      "cpu_seconds": 0.273044,
+      "max_rss_bytes": 90456064,
+      "exit_code": 0,
+      "ok": true,
+      "reused": false,
+      "packet_cells": 1,
+      "packet_sheets": 0
+    },
+    {
+      "step": "11-r3-lossless-relayout",
+      "wall_seconds": 0.20482766699933563,
+      "cpu_seconds": 0.182774,
+      "max_rss_bytes": 37142528,
+      "exit_code": 0,
+      "ok": true,
+      "reused": false,
+      "packet_cells": 26,
+      "packet_sheets": 4
+    },
+    {
+      "step": "12-r3-weather-map-motion",
+      "wall_seconds": 0.2487382079998497,
+      "cpu_seconds": 0.49162999999999996,
+      "max_rss_bytes": 103481344,
+      "exit_code": 0,
+      "ok": true,
+      "reused": false,
+      "packet_cells": 26,
+      "packet_sheets": 2
+    },
+    {
+      "step": "13-r3-events",
+      "wall_seconds": 8.984547125000972,
+      "cpu_seconds": 17.994342,
+      "max_rss_bytes": 87506944,
+      "exit_code": 0,
+      "ok": true,
+      "reused": false
+    },
+    {
+      "step": "14-r3-all-packet-verification",
+      "wall_seconds": 0.062340417000086745,
+      "cpu_seconds": 0.047945999999999996,
+      "max_rss_bytes": 14286848,
+      "exit_code": 0,
+      "ok": true,
+      "reused": null
+    },
+    {
+      "step": "16-r3-warm-overview",
+      "wall_seconds": 0.0319229999986419,
+      "cpu_seconds": 0.011633999999999999,
+      "max_rss_bytes": 11468800,
+      "exit_code": 0,
+      "ok": true,
+      "reused": true,
+      "packet_cells": 12,
+      "packet_sheets": 1
+    },
+    {
+      "step": "17-r3-warm-motion",
+      "wall_seconds": 0.02745587499885005,
+      "cpu_seconds": 0.014608,
+      "max_rss_bytes": 11681792,
+      "exit_code": 0,
+      "ok": true,
+      "reused": true,
+      "packet_cells": 26,
+      "packet_sheets": 2
+    },
+    {
+      "step": "18-r3-retain-returned-absolute-packets",
+      "wall_seconds": 0.7734020420029992,
+      "cpu_seconds": 0.45804599999999995,
+      "max_rss_bytes": 17416192,
+      "exit_code": 0,
+      "ok": true,
+      "reused": null
+    },
+    {
+      "step": "19-r3-cleanup-preview",
+      "wall_seconds": 0.579744083002879,
+      "cpu_seconds": 0.332368,
+      "max_rss_bytes": 15335424,
+      "exit_code": 0,
+      "ok": true,
+      "reused": null
+    },
+    {
+      "step": "20-r3-cleanup-to-trash",
+      "wall_seconds": 0.3485051249990647,
+      "cpu_seconds": 0.26394399999999996,
+      "max_rss_bytes": 27901952,
+      "exit_code": 0,
+      "ok": true,
+      "reused": null
+    }
+  ],
+  "bounded_results": [
+    "Completed fresh native acquisition with explicit managed setup, and resumed the earlier incomplete acquisition after a real output-framing failure.",
+    "Warm acquisition succeeded with an intentionally missing downloader override, after default prepare created its sibling analysis.",
+    "No cloud transcription, captions, cookies, plugins, remote EJS downloads, global installation, push, or merge performed.",
+    "Source media and detailed evidence remain outside the repository; public results omit local private paths."
+  ]
+}

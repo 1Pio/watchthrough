@@ -56,6 +56,7 @@ final class PipelineTests: XCTestCase {
         let first = try packets()
         XCTAssertEqual(first.count, 1)
         XCTAssertEqual(first[0].timingPrecision, .none)
+        XCTAssertTrue(first[0].cells.allSatisfy { $0.captionPreview == nil })
         _ = try run(["inspect", analysis.path, "transcript"])
         let manifest = try readManifest()
         XCTAssertEqual(manifest.transcript.state, "ready")
@@ -68,6 +69,12 @@ final class PipelineTests: XCTestCase {
         let all = try packets()
         XCTAssertEqual(all.count, 2)
         XCTAssertTrue(all.contains { $0.cells.contains { $0.caption.contains("First caption") } })
+        let captioned = try XCTUnwrap(all.first { $0.timingPrecision == .segment })
+        XCTAssertTrue(captioned.cells.allSatisfy { $0.captionPreview?.text == "First caption." })
+        XCTAssertTrue(captioned.cells.allSatisfy { $0.captionPreview?.startSeconds == 0 && $0.captionPreview?.endSeconds == 2 })
+        let originalImages = try XCTUnwrap(first[0].artifactFingerprints).filter { $0.key.hasPrefix("frames/") }
+        let reusedImages = try XCTUnwrap(captioned.artifactFingerprints).filter { $0.key.hasPrefix("frames/") }
+        XCTAssertEqual(reusedImages, originalImages)
         XCTAssertEqual(Set(all.compactMap(\.evidenceFingerprint)).count, 1)
         XCTAssertEqual(Set(all.compactMap(\.contentFingerprint)).count, 2)
         XCTAssertTrue(try readManifest().visual.frameIndexPath.isEmpty)
@@ -221,7 +228,9 @@ final class PipelineTests: XCTestCase {
         let replacementImage = replacementURL.deletingLastPathComponent().appendingPathComponent(try XCTUnwrap(replacement.cells.first).framePath)
         XCTAssertEqual(try Data(contentsOf: replacementImage), original)
         XCTAssertEqual(try Data(contentsOf: imageURL), corrupted, "regeneration must not overwrite existing user-owned cache files")
-        XCTAssertEqual(WatchthroughApplication().status(StatusOptions(analysis: analysis, verify: true)).exit, .success)
+        let verified = WatchthroughApplication().status(StatusOptions(analysis: analysis, verify: true))
+        XCTAssertEqual(verified.exit, .operation, "full verification must report the preserved corrupt packet even after a good replacement is generated")
+        XCTAssertTrue(verified.response.result.warnings.joined().contains(before.visual.overviewPacketPath))
     }
 
     func testCachedPacketStructureRejectsChangedLabelsDespiteUnchangedImageChecksums() throws {

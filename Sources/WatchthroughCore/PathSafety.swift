@@ -226,14 +226,14 @@ enum PathSafety {
             == rhs.standardizedFileURL.resolvingSymlinksInPath()
     }
 
-    private static func entryType(at url: URL) -> FileAttributeType? {
+    static func entryType(at url: URL) -> FileAttributeType? {
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else {
             return nil
         }
         return attributes[.type] as? FileAttributeType
     }
 
-    private static func isSymbolicLink(_ url: URL) -> Bool {
+    static func isSymbolicLink(_ url: URL) -> Bool {
         entryType(at: url) == .typeSymbolicLink
     }
 

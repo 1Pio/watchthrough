@@ -123,7 +123,8 @@ public enum ProcessRunner {
         environment overrides: [String: String]? = nil,
         inheritEnvironment: Bool = true,
         timeout: TimeInterval? = nil,
-        stdoutConsumer: ((Data) throws -> Void)? = nil
+        stdoutConsumer: ((Data) throws -> Void)? = nil,
+        stderrConsumer: ((Data) throws -> Void)? = nil
     ) throws -> ProcessOutput {
         if let timeout, !timeout.isFinite || timeout <= 0 {
             throw WatchthroughFailure(.usage, "process timeout must be greater than zero")
@@ -149,7 +150,7 @@ public enum ProcessRunner {
         defer { ProcessSignalRelay.unregister(child.processIdentifier) }
 
         var stdout = CapturedPipe(readDescriptor: child.standardOutput, consume: stdoutConsumer)
-        var stderr = CapturedPipe(readDescriptor: child.standardError)
+        var stderr = CapturedPipe(readDescriptor: child.standardError, consume: stderrConsumer)
         var waitStatus: Int32 = 0
         var childExited = false
         var completed = false

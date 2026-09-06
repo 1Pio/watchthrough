@@ -752,6 +752,23 @@ enum InspectionPacketValidation {
             try require(cell.intervalStartSeconds >= packet.rangeStartSeconds && cell.intervalEndSeconds <= packet.rangeEndSeconds,
                 "cell interval is outside the packet range")
             try require(cell.timestamp == CLIParser.formatTime(cell.ptsSeconds), "formatted timestamp disagrees with decoded PTS")
+            if let preview = cell.captionPreview {
+                try require(preview.timingPrecision == packet.timingPrecision, "speech preview timing precision disagrees with transcript")
+                if preview.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    try require(preview.startSeconds == nil && preview.endSeconds == nil,
+                        "empty speech preview claims speech bounds")
+                } else {
+                    guard let start = preview.startSeconds, let end = preview.endSeconds else {
+                        throw WatchthroughFailure(.operation, "inspection packet structure is invalid: speech preview lacks timing bounds")
+                    }
+                    try require(preview.timingPrecision != .none && start.isFinite && end.isFinite && end >= start,
+                        "invalid speech preview timing")
+                    let lower = cell.ptsSeconds - TranscriptCaptions.previewRadiusSeconds
+                    let upper = cell.ptsSeconds + TranscriptCaptions.previewRadiusSeconds
+                    try require(start < upper && (end > lower || (start == end && start >= lower)),
+                        "speech preview is outside the frame neighborhood")
+                }
+            }
             if index > 0 {
                 let previous = packet.cells[index - 1]
                 try require(previous.ptsSeconds <= cell.ptsSeconds, "decoded timestamps are not ordered")

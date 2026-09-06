@@ -4,6 +4,19 @@ import XCTest
 @testable import WatchthroughCore
 
 final class ProcessRunnerTests: XCTestCase {
+    func testStreamingDiagnosticsRemainSeparateAndDoNotAccumulate() throws {
+        var received = 0
+        let output = try ProcessRunner.run(
+            "/bin/sh",
+            arguments: ["-c", "/usr/bin/head -c 262144 /dev/zero >&2; printf result"],
+            timeout: 5,
+            stderrConsumer: { received += $0.count }
+        ).requireSuccess()
+        XCTAssertEqual(received, 262_144)
+        XCTAssertTrue(output.stderrData.isEmpty)
+        XCTAssertEqual(output.stdout, "result")
+    }
+
     func testStreamingOutputDoesNotAccumulateCapturedPayload() throws {
         var received = 0
         let output = try ProcessRunner.run(

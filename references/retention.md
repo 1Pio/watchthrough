@@ -64,10 +64,11 @@ watchthrough --json retain ANALYSIS --note /path/source-note.md \
   --dossier /path/source.description
 ~~~
 
-Use actual returned relative paths, not the placeholder names above. Including
+Use actual returned artifact paths, not the placeholder names above. Including
 `packet.json` or `packet.md` automatically retains that packet's frames, sheets,
-and navigation files. Pass the returned packet path relative to the analysis;
-do not enumerate its `artifactFingerprints` or list every dependent image by hand.
+and navigation files. `--include` accepts the returned absolute path or a path
+relative to the analysis; paths outside that analysis remain invalid. There is no
+need to enumerate `artifactFingerprints` or list every dependent image by hand.
 For one isolated still, `--include` also accepts that explicit image alone.
 Retain a complete frame sequence when motion is material. Dossiers are explicitly selected,
 bounded local text/JSON files. No comments, private metadata, or unrelated files

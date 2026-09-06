@@ -2,6 +2,20 @@ import XCTest
 @testable import WatchthroughCore
 
 final class CLITests: XCTestCase {
+    func testAcquisitionUsesCanonicalSingleVideoAndExplicitSetup() throws {
+        guard case let .acquire(options) = try CLIParser.parse(["--json", "acquire",
+            "https://youtu.be/_6jZlnRsXXQ?t=15", "--out", "/tmp/video bundle", "--height", "720", "--update-downloader"]).command else {
+            return XCTFail("expected acquire")
+        }
+        XCTAssertEqual(options.url, "https://www.youtube.com/watch?v=_6jZlnRsXXQ")
+        XCTAssertEqual(options.output.path, "/tmp/video bundle")
+        XCTAssertEqual(options.height, 720)
+        XCTAssertTrue(options.updateDownloader)
+        XCTAssertThrowsError(try CLIParser.parse(["acquire", options.url]))
+        XCTAssertThrowsError(try CLIParser.parse(["acquire", options.url, "--out", "https://example.com/bundle"]))
+        XCTAssertThrowsError(try CLIParser.parse(["acquire", options.url, "--out", "/tmp/bundle", "--height", "9000"]))
+    }
+
     func testSignedPresentationTimesAndFormattingCarry() throws {
         XCTAssertEqual(try CLIParser.parseTime("-00:00.080"), -0.08, accuracy: 0.000_001)
         XCTAssertEqual(try CLIParser.parseTime("+01:02.500"), 62.5, accuracy: 0.000_001)
@@ -12,7 +26,7 @@ final class CLITests: XCTestCase {
     }
 
     func testParsesSmallPublicSurface() throws {
-        for command in ["prepare", "inspect", "status"] {
+        for command in ["acquire", "prepare", "inspect", "status"] {
             let invocation = try CLIParser.parse([command, "--help"])
             guard case .help = invocation.command else {
                 return XCTFail("expected \(command) --help to show help")

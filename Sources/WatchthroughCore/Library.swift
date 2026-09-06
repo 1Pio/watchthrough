@@ -55,7 +55,7 @@ public enum DurableLibrary {
             copies.append((try file(text, under: analysis), "transcript/transcript.txt", "canonical full transcript text", text))
         }
         var includedBytes: Int64 = 0
-        for relative in try expandedIncludes(includes, analysis: analysis, source: manifest.source).sorted() {
+        for relative in try expandedIncludes(normalizedIncludes(includes, analysis: analysis), analysis: analysis, source: manifest.source).sorted() {
             let input = try file(relative, under: analysis)
             guard relative.hasPrefix("visual/") || relative.hasPrefix("inspections/"),
                   ["jpg", "jpeg", "png", "webp", "json", "md"].contains(input.pathExtension.lowercased()) else {
@@ -386,6 +386,36 @@ public enum DurableLibrary {
         let actualFiles = Set(try inventoryOf(root).filter { $0.kind == "file" }.map(\.path))
         guard actualFiles == seen.union(["receipt.json"]) else { throw failure("retained snapshot contains unrecorded artifacts") }
         return receipt
+    }
+
+    /// Returned absolute artifact paths enter the same relative ownership checks.
+    private static func normalizedIncludes(_ requested: [String], analysis: URL) throws -> [String] {
+        try requested.map { path in
+            guard path.hasPrefix("/") else { return path }
+            guard path.split(separator: "/").allSatisfy({ $0 != "." && $0 != ".." }) else {
+                throw failure("absolute --include paths cannot contain traversal components")
+            }
+            let input = URL(fileURLWithPath: path).standardizedFileURL
+            let canonical = input.resolvingSymlinksInPath()
+            guard isWithin(canonical, analysis), canonical.path != analysis.path,
+                  let owner = identity(analysis) else {
+                throw failure("absolute --include path must be an artifact inside this analysis: \(path)")
+            }
+            // Match the analysis by filesystem identity so platform parent
+            // aliases such as /var still work; never accept a linked artifact.
+            var current = input
+            var components: [String] = []
+            while true {
+                guard entryType(current) != .typeSymbolicLink else {
+                    throw failure("absolute --include paths cannot traverse symbolic links: \(path)")
+                }
+                if identity(current) == owner { break }
+                guard current.path != "/" else { throw failure("absolute --include path escapes its analysis") }
+                components.append(current.lastPathComponent)
+                current = current.deletingLastPathComponent()
+            }
+            return components.reversed().joined(separator: "/")
+        }
     }
 
     /// A canonical packet is the navigation unit. Preserve the relative layout so

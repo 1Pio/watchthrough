@@ -79,6 +79,41 @@ final class LibraryTests: XCTestCase {
         XCTAssertEqual(try String(contentsOfFile: try XCTUnwrap(retained.artifacts["summary"]), encoding: .utf8), summary)
     }
 
+    func testRetainAcceptsReturnedAbsolutePacketPathAndKeepsDependencyExpansion() throws {
+        let packet = try writePacket()
+        let absolute = analysis.appendingPathComponent(packet).path
+        let result = try DurableLibrary.retain(analysis: analysis, note: note, library: library, includes: [absolute, packet])
+        let snapshot = URL(fileURLWithPath: try XCTUnwrap(result.artifacts["snapshot"]))
+        let prefix = String(packet.dropLast("packet.json".count))
+        for relative in [packet, prefix + "packet.md", prefix + "strip-01.png",
+                         prefix + "frames/frame-o00000000.jpg", prefix + "frames/frame-o00000001.jpg"] {
+            XCTAssertEqual(try Data(contentsOf: snapshot.appendingPathComponent("evidence/" + relative)),
+                           try Data(contentsOf: analysis.appendingPathComponent(relative)))
+        }
+        let receipt = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: snapshot.appendingPathComponent("receipt.json"))) as? [String: Any])
+        let files = try XCTUnwrap(receipt["files"] as? [[String: Any]])
+        let paths = files.compactMap { $0["path"] as? String }
+        XCTAssertEqual(Set(paths).count, paths.count, "absolute and relative references to the same packet must deduplicate")
+    }
+
+    func testRetainRejectsAbsoluteOutsideTraversalAndSymbolicLinkIncludes() throws {
+        let packet = try writePacket()
+        let packetRoot = analysis.appendingPathComponent(packet).deletingLastPathComponent()
+        let frame = packetRoot.appendingPathComponent("frames/frame-o00000000.jpg")
+        let linkedFrame = packetRoot.appendingPathComponent("frames/frame-linked.jpg")
+        try FileManager.default.createSymbolicLink(at: linkedFrame, withDestinationURL: frame)
+        let linkedRoot = analysis.appendingPathComponent("inspections/alias-9876abcd")
+        try FileManager.default.createSymbolicLink(at: linkedRoot, withDestinationURL: packetRoot)
+        let traversal = packetRoot.path + "/frames/../packet.json"
+        for path in [note.path, traversal, linkedFrame.path, linkedRoot.appendingPathComponent("packet.json").path] {
+            XCTAssertThrowsError(try DurableLibrary.retain(analysis: analysis, note: note, library: library, includes: [path]), path) { error in
+                XCTAssertTrue((error as? WatchthroughFailure)?.message.contains("absolute --include") == true)
+            }
+        }
+        XCTAssertEqual(try String(contentsOf: note, encoding: .utf8), summary)
+        XCTAssertEqual(try String(contentsOf: frame, encoding: .utf8), "frame 0")
+    }
+
     func testCleanupRejectsDamagedRetainedTranscript() throws {
         let result = try DurableLibrary.retain(analysis: analysis, note: note, library: library)
         let snapshot = URL(fileURLWithPath: try XCTUnwrap(result.artifacts["snapshot"]))

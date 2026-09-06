@@ -385,6 +385,78 @@ final class TranscriptTests: XCTestCase {
             to: [packetCell(index: 0, start: 0, end: 1)]
         )
         XCTAssertEqual(assigned[0].caption, "")
+        XCTAssertEqual(assigned[0].captionPreview?.timingPrecision, TimingPrecision.none)
+        XCTAssertEqual(assigned[0].captionPreview?.text, "")
+    }
+
+    func testOverviewTailPreviewUsesNearbySpeechAndRetainsFullIntervalCaption() throws {
+        let transcript = CanonicalTranscript(provider: "fixture", timingPrecision: .word,
+            text: "Earlier portfolio discussion. Final words.", words: [
+                TranscriptWord(id: "earlier", text: "Earlier portfolio discussion.", startSeconds: 3_422, endSeconds: 3_425),
+                TranscriptWord(id: "final", text: "Final words.", startSeconds: 3_582, endSeconds: 3_584.5),
+            ])
+        let tail = PacketCell(index: 11, ordinal: nil, ptsSeconds: 3_584.6,
+            intervalStartSeconds: 3_421.667, intervalEndSeconds: 3_584.661,
+            timestamp: "59:44.600", caption: "", framePath: "frames/tail.jpg")
+        let assigned = try XCTUnwrap(TranscriptCaptions.assign(transcript, to: [tail]).first)
+        XCTAssertEqual(assigned.caption, transcript.text)
+        let preview = try XCTUnwrap(assigned.captionPreview)
+        XCTAssertEqual(preview.text, "Final words.")
+        XCTAssertEqual(preview.startSeconds, 3_582)
+        XCTAssertEqual(preview.endSeconds, 3_584.5)
+        XCTAssertEqual(preview.timingPrecision, .word)
+    }
+
+    func testWordPreviewUsesHalfOpenMidpointsAndKeepsOriginalWordBounds() throws {
+        let transcript = CanonicalTranscript(provider: "fixture", timingPrecision: .word,
+            text: "before lower center upper", words: [
+                TranscriptWord(id: "before", text: "before", startSeconds: 5, endSeconds: 6),
+                TranscriptWord(id: "lower", text: "lower", startSeconds: 6, endSeconds: 8),
+                TranscriptWord(id: "center", text: "center", startSeconds: 9.8, endSeconds: 10.2),
+                TranscriptWord(id: "upper", text: "upper", startSeconds: 12, endSeconds: 14),
+            ])
+        let preview = TranscriptCaptions.preview(transcript, near: 10)
+        XCTAssertEqual(preview.text, "lower center")
+        XCTAssertEqual(preview.startSeconds, 6)
+        XCTAssertEqual(preview.endSeconds, 10.2)
+    }
+
+    func testDenseFramesKeepSpeechContextWithoutDuplicatingFullIntervalWords() throws {
+        let transcript = CanonicalTranscript(provider: "fixture", timingPrecision: .word,
+            text: "Move now", words: [
+                TranscriptWord(id: "move", text: "Move", startSeconds: 9.8, endSeconds: 10),
+                TranscriptWord(id: "now", text: "now", startSeconds: 10, endSeconds: 10.02),
+            ])
+        let cells = [packetCell(index: 0, start: 9.98, end: 10.01),
+                     packetCell(index: 1, start: 10.01, end: 10.04)]
+        let assigned = TranscriptCaptions.assign(transcript, to: cells)
+        XCTAssertEqual(assigned.map(\.caption), ["", "now"])
+        XCTAssertEqual(assigned.compactMap { $0.captionPreview?.text }, ["Move now", "Move now"])
+    }
+
+    func testSilentFramePreviewDoesNotBorrowDistantIntervalSpeech() throws {
+        let transcript = CanonicalTranscript(provider: "fixture", timingPrecision: .word,
+            text: "Earlier", words: [TranscriptWord(id: "w", text: "Earlier", startSeconds: 1, endSeconds: 2)])
+        let cell = packetCell(index: 0, start: 0, end: 60)
+        let assigned = try XCTUnwrap(TranscriptCaptions.assign(transcript, to: [cell]).first)
+        XCTAssertEqual(assigned.caption, "Earlier")
+        XCTAssertEqual(assigned.captionPreview?.text, "")
+        XCTAssertNil(assigned.captionPreview?.startSeconds)
+        XCTAssertNil(assigned.captionPreview?.endSeconds)
+        XCTAssertEqual(assigned.captionPreview?.timingPrecision, .word)
+    }
+
+    func testSegmentPreviewKeepsWholeOverlappingCueWithoutInventingWordTiming() throws {
+        let transcript = CanonicalTranscript(provider: "fixture", timingPrecision: .segment,
+            text: "Long source cue", segments: [TranscriptSegment(id: "cue", text: "Long source cue",
+                startSeconds: 0, endSeconds: 120, timingSource: "fixture")])
+        // Its midpoint is distant, but the coarse cue overlaps this frame's neighborhood.
+        let preview = TranscriptCaptions.preview(transcript, near: 5)
+        XCTAssertEqual(preview.text, "Long source cue")
+        XCTAssertEqual(preview.startSeconds, 0)
+        XCTAssertEqual(preview.endSeconds, 120)
+        XCTAssertEqual(preview.timingPrecision, .segment)
+        XCTAssertEqual(TranscriptCaptions.preview(transcript, near: 123).text, "")
     }
 
     func testMediaRelativeTranscriptCanAlignToNonzeroDecodedPTS() throws {

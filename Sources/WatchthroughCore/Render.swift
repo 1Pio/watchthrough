@@ -149,7 +149,7 @@ public enum StripRenderer {
         }
         let imageAreaHeight = imageSizes.map(\.height).max() ?? 1
         let captionLineHeight = 18
-        let captionHeight = 12 + 17 + 5 + options.maximumCaptionLines * captionLineHeight + 12
+        let captionHeight = 12 + 17 + 17 + 5 + options.maximumCaptionLines * captionLineHeight + 12
         let cellHeight = imageAreaHeight + captionHeight
         let stripHeight = cellHeight * grid.rows
 
@@ -283,6 +283,27 @@ public enum StripRenderer {
         return image
     }
 
+    static func captionContent(for cell: PacketCell) -> (frameLabel: String, speechLabel: String, body: String) {
+        let frameLabel = "Cell \(cell.index + 1) · Frame \(cell.timestamp)"
+        if let preview = cell.captionPreview {
+            if preview.timingPrecision == .none {
+                return (frameLabel, "Speech timing unavailable", "Use the full transcript for speech context.")
+            }
+            if let start = preview.startSeconds, let end = preview.endSeconds, !preview.text.isEmpty {
+                let kind = preview.timingPrecision == .segment ? "Speech cue" : "Speech"
+                return (frameLabel, "\(kind) \(CLIParser.formatTime(start)) to \(CLIParser.formatTime(end))", preview.text)
+            }
+            return (frameLabel, "Speech near this frame", "No timed speech within 3 seconds.")
+        }
+        // Old packets retain interval captions, whose first words can be far from the frame.
+        if !cell.caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return (frameLabel,
+                "Interval speech \(CLIParser.formatTime(cell.intervalStartSeconds)) to \(CLIParser.formatTime(cell.intervalEndSeconds))",
+                cell.caption)
+        }
+        return (frameLabel, "No timed transcript", "")
+    }
+
     private static func drawCaption(
         cell: PacketCell,
         context: CGContext,
@@ -291,13 +312,15 @@ public enum StripRenderer {
         lineHeight: CGFloat
     ) {
         let timestampFont = CTFontCreateWithName("SFMono-Semibold" as CFString, 12, nil)
+        let speechFont = CTFontCreateWithName("Helvetica" as CFString, 11, nil)
         let bodyFont = CTFontCreateWithName("Helvetica" as CFString, 13, nil)
         let dark = CGColor(red: 0.105, green: 0.102, blue: 0.094, alpha: 1)
         let muted = CGColor(red: 0.38, green: 0.37, blue: 0.34, alpha: 1)
         context.textMatrix = .identity
 
+        let content = captionContent(for: cell)
         let timestamp = NSAttributedString(
-            string: cell.timestamp,
+            string: content.frameLabel,
             attributes: [
                 NSAttributedString.Key(kCTFontAttributeName as String): timestampFont,
                 NSAttributedString.Key(kCTForegroundColorAttributeName as String): muted,
@@ -307,7 +330,14 @@ public enum StripRenderer {
         context.textPosition = CGPoint(x: rect.minX, y: rect.maxY - 24)
         CTLineDraw(timestampLine, context)
 
-        let normalized = cell.caption
+        let speech = NSAttributedString(string: content.speechLabel, attributes: [
+            NSAttributedString.Key(kCTFontAttributeName as String): speechFont,
+            NSAttributedString.Key(kCTForegroundColorAttributeName as String): muted,
+        ])
+        context.textPosition = CGPoint(x: rect.minX, y: rect.maxY - 41)
+        CTLineDraw(CTLineCreateWithAttributedString(speech), context)
+
+        let normalized = content.body
             .components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }
             .joined(separator: " ")
@@ -325,7 +355,7 @@ public enum StripRenderer {
         let fullLength = attributed.length
         var position = 0
         var lineNumber = 0
-        var baseline = rect.maxY - 48
+        var baseline = rect.maxY - 65
         while position < fullLength, lineNumber < maximumLines {
             let remaining = fullLength - position
             let suggested = max(1, CTTypesetterSuggestLineBreak(typesetter, position, Double(rect.width)))
@@ -378,6 +408,10 @@ public enum PacketMarkdown {
         if !packet.sheets.isEmpty {
             lines.append("## Contact strips")
             lines.append("")
+            if packet.cells.contains(where: { $0.captionPreview != nil }) {
+                lines.append("Sheets show speech near each frame with its source timing; segment cues keep their full bounds. Complete interval captions are listed below.")
+                lines.append("")
+            }
             for (index, sheet) in packet.sheets.enumerated() {
                 lines.append("![Strip page \(index + 1)](<\(markdownDestination(sheet))>)")
                 lines.append("")

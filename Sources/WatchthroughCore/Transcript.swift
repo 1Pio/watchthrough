@@ -1059,6 +1059,8 @@ public enum TranscriptNormalizer {
 // MARK: - Packet captions
 
 public enum TranscriptCaptions {
+    public static let previewRadiusSeconds = 3.0
+
     /// Assigns each timed word, or each timed segment when words are unavailable,
     /// to at most one frame interval using its midpoint and half-open intervals.
     public static func assign(_ transcript: CanonicalTranscript, to cells: [PacketCell]) -> [PacketCell] {
@@ -1081,8 +1083,41 @@ public enum TranscriptCaptions {
 
         for index in output.indices {
             output[index].caption = renderPieces(buckets[index])
+            output[index].captionPreview = preview(transcript, near: output[index].ptsSeconds)
         }
         return output
+    }
+
+    /// Word previews use the same half-open midpoint rule as interval captions.
+    /// Coarse cues instead overlap the window, and retain their full source bounds.
+    /// Previews may repeat across adjacent frames; complete interval captions do not.
+    static func preview(_ transcript: CanonicalTranscript, near pts: Double) -> PacketCaptionPreview {
+        let windowStart = pts - previewRadiusSeconds
+        let windowEnd = pts + previewRadiusSeconds
+        var pieces: [(text: String, start: Double, end: Double)] = []
+        switch transcript.timingPrecision {
+        case .word:
+            for word in transcript.words where valid(word.startSeconds, word.endSeconds) {
+                let midpoint = word.startSeconds + (word.endSeconds - word.startSeconds) / 2
+                if midpoint >= windowStart && midpoint < windowEnd {
+                    pieces.append((word.text, word.startSeconds, word.endSeconds))
+                }
+            }
+        case .segment:
+            for segment in transcript.segments {
+                guard let start = segment.startSeconds, let end = segment.endSeconds,
+                      valid(start, end), start < windowEnd,
+                      end > windowStart || (start == end && start >= windowStart) else { continue }
+                pieces.append((segment.text, start, end))
+            }
+        case .none: break
+        }
+        let text = renderPieces(pieces.map(\.text)).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+            return PacketCaptionPreview(text: "", timingPrecision: transcript.timingPrecision)
+        }
+        return PacketCaptionPreview(text: text, startSeconds: pieces.map(\.start).min(),
+            endSeconds: pieces.map(\.end).max(), timingPrecision: transcript.timingPrecision)
     }
 
     private static func bestCell(start: Double, end: Double, cells: [PacketCell]) -> Int? {

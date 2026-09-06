@@ -9,7 +9,7 @@ Use the CLI to get the evidence needed for the user's task. You interpret it. St
 
 ## Start
 
-1. For a previously studied source, check the dedicated library for a matching source note and reuse sufficient retained evidence. Otherwise resolve the source to a local video. For YouTube acquisition or page context, read [references/youtube.md](references/youtube.md). Assign one preparation owner and reuse one analysis path per source.
+1. For a previously studied source, check the dedicated library for a matching source note and reuse sufficient retained evidence. Otherwise resolve the source to a local video. For YouTube, use `acquire URL --out BUNDLE` and follow `artifacts.source`; [references/youtube.md](references/youtube.md) covers dependency setup, interrupted downloads, and page context. Assign one preparation owner and reuse one analysis path per source.
 2. Run `watchthrough --json prepare VIDEO`. This returns metadata and the local transcript, normally without a full visual decode. Missing duration metadata triggers a reported decoded fallback. For an immediately visual question, add `--defer-transcript`; request the transcript later with `inspect ANALYSIS transcript`. Use `status` for a readiness problem, not before every operation.
 3. Follow the result's artifact paths and stage states. If execution yields a session ID, poll that same process to its final JSON. If its owner is lost, use `status ANALYSIS`; preserve the original path and active work. [references/recovery.md](references/recovery.md) covers busy, failed, stale, and interrupted work.
 
@@ -30,6 +30,8 @@ watchthrough --json inspect ANALYSIS frame:18720
 ~~~
 
 Overview is a small orientation sample. For whole-video study, open every returned sheet and record its gaps. Timestamp and range probes decode the requested region; `1f` means consecutive decoded frames within that region. Global `frame:N` explicitly builds the full decoded index and can cost more. Read returned timestamps and ordinal basis, rather than inferring frame numbers from FPS.
+
+Sheet speech excerpts are timed near their displayed frames. Their labels give actual word or whole-cue bounds; an ellipsis marks shortened text. Complete interval captions remain in packet Markdown/JSON, and the full transcript remains the source for complete spoken coverage.
 
 - Talking head: follow the transcript, then probe cited graphics, examples, source cards, and edits.
 - Slides or documents: capture stable states and progressive reveals; use a short range to find a clear frame before asking for detail.
