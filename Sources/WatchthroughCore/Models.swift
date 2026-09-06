@@ -1,11 +1,12 @@
 import Foundation
 
 public enum WatchthroughVersion {
-    public static let current = "0.1.0"
+    public static let current = "0.2.0"
     public static let resultSchema = "watchthrough.result.v1"
     public static let manifestSchema = "watchthrough.manifest.v1"
     public static let transcriptSchema = "watchthrough.transcript.v1"
-    public static let packetSchema = "watchthrough.packet.v1"
+    public static let packetSchema = "watchthrough.packet.v2"
+    public static let supportedPacketSchemas: Set<String> = [packetSchema, "watchthrough.packet.v1"]
 }
 
 public enum WatchthroughExit: Int32 {
@@ -157,6 +158,8 @@ public struct MediaInfo: Codable, Equatable, Sendable {
     public var frameCount: Int
     public var firstPTS: Double
     public var lastPTS: Double
+    public var audioStartPTS: Double?
+    public var containerStartPTS: Double?
 
     public init(
         durationSeconds: Double,
@@ -170,7 +173,9 @@ public struct MediaInfo: Codable, Equatable, Sendable {
         hasAudio: Bool,
         frameCount: Int,
         firstPTS: Double,
-        lastPTS: Double
+        lastPTS: Double,
+        audioStartPTS: Double? = nil,
+        containerStartPTS: Double? = nil
     ) {
         self.durationSeconds = durationSeconds
         self.width = width
@@ -184,6 +189,8 @@ public struct MediaInfo: Codable, Equatable, Sendable {
         self.frameCount = frameCount
         self.firstPTS = firstPTS
         self.lastPTS = lastPTS
+        self.audioStartPTS = audioStartPTS
+        self.containerStartPTS = containerStartPTS
     }
 }
 
@@ -192,12 +199,14 @@ public struct SourceRecord: Codable, Equatable, Sendable {
     public var sha256: String
     public var sizeBytes: Int64
     public var modifiedAt: String
+    public var modifiedAtNanoseconds: String?
 
-    public init(path: String, sha256: String, sizeBytes: Int64, modifiedAt: String) {
+    public init(path: String, sha256: String, sizeBytes: Int64, modifiedAt: String, modifiedAtNanoseconds: String? = nil) {
         self.path = path
         self.sha256 = sha256
         self.sizeBytes = sizeBytes
         self.modifiedAt = modifiedAt
+        self.modifiedAtNanoseconds = modifiedAtNanoseconds
     }
 }
 
@@ -205,21 +214,29 @@ public struct PreparationConfig: Codable, Equatable, Sendable {
     public var transcriber: String
     public var transcriptInputFingerprint: String
     public var visualSampleLimit: Int
+    public var speakers: Bool
+    public var deferTranscript: Bool
 
     public init(
         transcriber: String,
         transcriptInputFingerprint: String = "unspecified",
-        visualSampleLimit: Int = 7_200
+        visualSampleLimit: Int = 7_200,
+        speakers: Bool = false,
+        deferTranscript: Bool = false
     ) {
         self.transcriber = transcriber
         self.transcriptInputFingerprint = transcriptInputFingerprint
         self.visualSampleLimit = visualSampleLimit
+        self.speakers = speakers
+        self.deferTranscript = deferTranscript
     }
 
     private enum CodingKeys: String, CodingKey {
         case transcriber
         case transcriptInputFingerprint
         case visualSampleLimit
+        case speakers
+        case deferTranscript
     }
 
     public init(from decoder: Decoder) throws {
@@ -233,6 +250,8 @@ public struct PreparationConfig: Codable, Equatable, Sendable {
             Int.self,
             forKey: .visualSampleLimit
         ) ?? 7_200
+        speakers = try values.decodeIfPresent(Bool.self, forKey: .speakers) ?? false
+        deferTranscript = try values.decodeIfPresent(Bool.self, forKey: .deferTranscript) ?? false
     }
 }
 
@@ -246,6 +265,12 @@ public struct TranscriptSummary: Codable, Equatable, Sendable {
     public var path: String?
     public var textPath: String?
     public var rawPath: String?
+    public var state: String?
+    public var fingerprint: String?
+    public var textBytes: Int?
+    public var textFingerprint: String?
+    public var timelineOrigin: String?
+    public var approximateTokens: Int?
 
     public init(
         available: Bool,
@@ -256,7 +281,13 @@ public struct TranscriptSummary: Codable, Equatable, Sendable {
         speakersAvailable: Bool? = nil,
         path: String? = nil,
         textPath: String? = nil,
-        rawPath: String? = nil
+        rawPath: String? = nil,
+        state: String? = nil,
+        fingerprint: String? = nil,
+        textBytes: Int? = nil,
+        textFingerprint: String? = nil,
+        timelineOrigin: String? = nil,
+        approximateTokens: Int? = nil
     ) {
         self.available = available
         self.provider = provider
@@ -267,6 +298,12 @@ public struct TranscriptSummary: Codable, Equatable, Sendable {
         self.path = path
         self.textPath = textPath
         self.rawPath = rawPath
+        self.state = state
+        self.fingerprint = fingerprint
+        self.textBytes = textBytes
+        self.textFingerprint = textFingerprint
+        self.timelineOrigin = timelineOrigin
+        self.approximateTokens = approximateTokens
     }
 }
 
@@ -278,15 +315,17 @@ public struct VisualSummary: Codable, Equatable, Sendable {
     public var largestOverviewGapSeconds: Double
     public var eventCount: Int
     public var scanFPS: Double
+    public var indexedFirstPTS: Double?
+    public var indexedLastPTS: Double?
 
     public init(
-        frameIndexPath: String,
-        overviewPacketPath: String,
-        eventsPath: String,
-        overviewFrames: Int,
-        largestOverviewGapSeconds: Double,
-        eventCount: Int,
-        scanFPS: Double
+        frameIndexPath: String = "",
+        overviewPacketPath: String = "",
+        eventsPath: String = "",
+        overviewFrames: Int = 0,
+        largestOverviewGapSeconds: Double = 0,
+        eventCount: Int = 0,
+        scanFPS: Double = 0
     ) {
         self.frameIndexPath = frameIndexPath
         self.overviewPacketPath = overviewPacketPath
@@ -374,13 +413,31 @@ public struct EventIndex: Codable, Equatable, Sendable {
 
 public struct PacketCell: Codable, Equatable, Sendable {
     public var index: Int
-    public var ordinal: Int
+    /// Present only when a complete decoded index established a global ordinal.
+    public var ordinal: Int?
+    public var ordinalBasis: String?
+    public var localOrdinal: Int?
     public var ptsSeconds: Double
     public var intervalStartSeconds: Double
     public var intervalEndSeconds: Double
     public var timestamp: String
     public var caption: String
     public var framePath: String
+
+    public init(index: Int, ordinal: Int?, ptsSeconds: Double, intervalStartSeconds: Double,
+                intervalEndSeconds: Double, timestamp: String, caption: String, framePath: String,
+                ordinalBasis: String? = nil, localOrdinal: Int? = nil) {
+        self.index = index
+        self.ordinal = ordinal
+        self.ordinalBasis = ordinalBasis
+        self.localOrdinal = localOrdinal
+        self.ptsSeconds = ptsSeconds
+        self.intervalStartSeconds = intervalStartSeconds
+        self.intervalEndSeconds = intervalEndSeconds
+        self.timestamp = timestamp
+        self.caption = caption
+        self.framePath = framePath
+    }
 }
 
 public struct InspectionPacket: Codable, Equatable, Sendable {
@@ -396,6 +453,10 @@ public struct InspectionPacket: Codable, Equatable, Sendable {
     public var cells: [PacketCell]
     public var sheets: [String]
     public var warnings: [String]
+    public var contentFingerprint: String?
+    public var evidenceFingerprint: String?
+    public var artifactFingerprints: [String: String]?
+    public var maximumFrameWidth: Int?
 
     public init(
         selector: String,
@@ -408,7 +469,11 @@ public struct InspectionPacket: Codable, Equatable, Sendable {
         timingPrecision: TimingPrecision,
         cells: [PacketCell],
         sheets: [String],
-        warnings: [String] = []
+        warnings: [String] = [],
+        contentFingerprint: String? = nil,
+        evidenceFingerprint: String? = nil,
+        artifactFingerprints: [String: String]? = nil,
+        maximumFrameWidth: Int? = nil
     ) {
         self.selector = selector
         self.sourcePath = sourcePath
@@ -420,11 +485,16 @@ public struct InspectionPacket: Codable, Equatable, Sendable {
         self.timingPrecision = timingPrecision
         self.cells = cells
         self.sheets = sheets
+        self.contentFingerprint = contentFingerprint
+        self.evidenceFingerprint = evidenceFingerprint
+        self.artifactFingerprints = artifactFingerprints
+        self.maximumFrameWidth = maximumFrameWidth
         self.warnings = warnings
     }
 }
 
 public enum InspectionSelector: Equatable, Sendable {
+    case transcript
     case overview
     case events
     case event(String)

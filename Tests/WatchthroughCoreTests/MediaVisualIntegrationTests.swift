@@ -211,7 +211,8 @@ final class MediaVisualIntegrationTests: XCTestCase {
         XCTAssertGreaterThan(seek, 0)
         XCTAssertLessThan(seek, 2.1)
         let filterFlag = try XCTUnwrap(arguments.firstIndex(of: "-vf"))
-        XCTAssertTrue(arguments[filterFlag + 1].contains("eq(n\\,"))
+        XCTAssertTrue(arguments[filterFlag + 1].contains("between(t\\,"))
+        XCTAssertTrue(arguments[filterFlag + 1].contains("showinfo"))
     }
 
     private func runFFmpeg(_ arguments: [String]) throws {

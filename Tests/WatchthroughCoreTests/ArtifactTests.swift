@@ -65,6 +65,16 @@ final class ArtifactTests: XCTestCase {
         XCTAssertEqual(config.visualSampleLimit, 7_200)
     }
 
+    func testPacketVersionTwoAnnouncesOptionalOrdinalAndRetainsVersionOneDecoding() throws {
+        XCTAssertEqual(WatchthroughVersion.packetSchema, "watchthrough.packet.v2")
+        XCTAssertTrue(WatchthroughVersion.supportedPacketSchemas.contains("watchthrough.packet.v1"))
+        let legacy = Data(#"{"index":0,"ordinal":12,"ptsSeconds":0.5,"intervalStartSeconds":0.4,"intervalEndSeconds":0.6,"timestamp":"00:00.500","caption":"","framePath":"frames/frame-o00000012.jpg"}"#.utf8)
+        let cell = try StableJSON.decode(PacketCell.self, from: legacy)
+        XCTAssertEqual(cell.ordinal, 12)
+        XCTAssertNil(cell.ordinalBasis)
+        XCTAssertNil(cell.localOrdinal)
+    }
+
     func testPreparationReuseRequiresEveryOverviewFrameReferencedByPacket() throws {
         let analysis = temporaryDirectory.appendingPathComponent("analysis", isDirectory: true)
         let overview = analysis

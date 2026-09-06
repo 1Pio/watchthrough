@@ -279,7 +279,7 @@ public final class ExclusiveFileLock: @unchecked Sendable {
             }
             guard timeout > 0, Date() < deadline else {
                 Darwin.close(descriptor)
-                let activity = operation == LOCK_SH ? "written" : "read or written"
+                let activity = operation == LOCK_SH ? "written" : "written or read"
                 throw WatchthroughFailure(.operation, "analysis is already being \(activity) by another process")
             }
             usleep(100_000)
@@ -421,54 +421,32 @@ public enum ManifestStore {
         _ manifest: PreparationManifest,
         under artifactRoot: URL
     ) throws -> Bool {
-        guard manifest.media.durationSeconds.isFinite,
-              manifest.media.durationSeconds > 0,
-              manifest.media.width > 0,
-              manifest.media.height > 0,
-              manifest.media.firstPTS.isFinite,
-              manifest.media.lastPTS.isFinite,
-              manifest.media.lastPTS >= manifest.media.firstPTS,
-              let frameIndexURL = artifactURL(
-                  relativePath: manifest.visual.frameIndexPath,
-                  under: artifactRoot
-              ),
-              let overviewPacketURL = artifactURL(
-                  relativePath: manifest.visual.overviewPacketPath,
-                  under: artifactRoot
-              ),
-              let eventsURL = artifactURL(
-                  relativePath: manifest.visual.eventsPath,
-                  under: artifactRoot
-              ) else {
-            return false
+        guard manifest.media.durationSeconds.isFinite, manifest.media.durationSeconds > 0,
+              manifest.media.width > 0, manifest.media.height > 0,
+              manifest.media.firstPTS.isFinite, manifest.media.lastPTS.isFinite,
+              manifest.media.lastPTS >= manifest.media.firstPTS else { return false }
+        var frames: [FramePoint] = []
+        if !manifest.visual.frameIndexPath.isEmpty {
+            guard let url = artifactURL(relativePath: manifest.visual.frameIndexPath, under: artifactRoot) else { return false }
+            frames = try FrameIndexTSV.read(from: url)
+            guard frames.count == manifest.media.frameCount else { return false }
         }
-
-        let frames = try FrameIndexTSV.read(from: frameIndexURL)
-        guard frames.count == manifest.media.frameCount,
-              frames.first?.ordinal == 0,
-              frames.last?.ordinal == manifest.media.frameCount - 1,
-              nearlyEqual(frames.first?.ptsSeconds, manifest.media.firstPTS),
-              nearlyEqual(frames.last?.ptsSeconds, manifest.media.lastPTS) else {
-            return false
+        if !manifest.visual.overviewPacketPath.isEmpty {
+            guard let url = artifactURL(relativePath: manifest.visual.overviewPacketPath, under: artifactRoot) else { return false }
+            let packet = try StableJSON.decode(InspectionPacket.self, from: url)
+            if !frames.isEmpty, packet.contentFingerprint == nil {
+                guard overviewIsReusable(packet, packetRoot: url.deletingLastPathComponent(), manifest: manifest, frames: frames) else { return false }
+            } else {
+                guard WatchthroughVersion.supportedPacketSchemas.contains(packet.schema),
+                      packet.cells.count == manifest.visual.overviewFrames,
+                      artifactURL(relativePath: "packet.md", under: url.deletingLastPathComponent()) != nil,
+                      (packet.sheets + packet.cells.map(\.framePath)).allSatisfy({ artifactURL(relativePath: $0, under: url.deletingLastPathComponent()) != nil }) else { return false }
+            }
         }
-
-        let packet = try StableJSON.decode(InspectionPacket.self, from: overviewPacketURL)
-        guard overviewIsReusable(
-            packet,
-            packetRoot: overviewPacketURL.deletingLastPathComponent(),
-            manifest: manifest,
-            frames: frames
-        ) else {
-            return false
-        }
-
-        let events = try StableJSON.decode(EventIndex.self, from: eventsURL)
-        guard eventsAreReusable(
-            events,
-            matching: manifest.visual,
-            media: manifest.media
-        ) else {
-            return false
+        if !manifest.visual.eventsPath.isEmpty {
+            guard let url = artifactURL(relativePath: manifest.visual.eventsPath, under: artifactRoot) else { return false }
+            let events = try StableJSON.decode(EventIndex.self, from: url)
+            guard eventsAreReusable(events, matching: manifest.visual, media: manifest.media) else { return false }
         }
 
         if manifest.transcript.available {
@@ -506,7 +484,7 @@ public enum ManifestStore {
         manifest: PreparationManifest,
         frames: [FramePoint]
     ) -> Bool {
-        guard packet.schema == WatchthroughVersion.packetSchema,
+        guard WatchthroughVersion.supportedPacketSchemas.contains(packet.schema),
               packet.selector == "overview",
               packet.sourcePath == manifest.source.path,
               packet.cells.count == manifest.visual.overviewFrames,
@@ -520,7 +498,7 @@ public enum ManifestStore {
               nearlyEqual(
                   packet.largestGapSeconds,
                   FrameSelector.largestGap(in: packet.cells.map {
-                      FramePoint(ordinal: $0.ordinal, ptsSeconds: $0.ptsSeconds)
+                      FramePoint(ordinal: $0.ordinal ?? $0.index, ptsSeconds: $0.ptsSeconds)
                   })
               ),
               nearlyEqual(packet.largestGapSeconds, manifest.visual.largestOverviewGapSeconds),
@@ -536,21 +514,22 @@ public enum ManifestStore {
         var framePaths = Set<String>()
         for (index, cell) in packet.cells.enumerated() {
             guard cell.index == index,
-                  cell.ordinal >= 0,
-                  cell.ordinal < frames.count,
+                  let ordinal = cell.ordinal,
+                  ordinal >= 0,
+                  ordinal < frames.count,
                   cell.ptsSeconds.isFinite,
                   cell.intervalStartSeconds.isFinite,
                   cell.intervalEndSeconds.isFinite,
                   cell.intervalStartSeconds <= cell.ptsSeconds,
                   cell.intervalEndSeconds >= cell.ptsSeconds,
-                  nearlyEqual(cell.ptsSeconds, frames[cell.ordinal].ptsSeconds),
+                  nearlyEqual(cell.ptsSeconds, frames[ordinal].ptsSeconds),
                   framePaths.insert(cell.framePath).inserted,
                   artifactURL(relativePath: cell.framePath, under: packetRoot) != nil else {
                 return false
             }
             if index > 0 {
                 let prior = packet.cells[index - 1]
-                guard prior.ordinal < cell.ordinal,
+                guard let priorOrdinal = prior.ordinal, priorOrdinal < ordinal,
                       prior.ptsSeconds <= cell.ptsSeconds else {
                     return false
                 }
@@ -709,6 +688,106 @@ public enum ManifestStore {
         guard let lhs else { return false }
         return abs(lhs - rhs) <= tolerance
     }
+}
+
+enum InspectionPacketValidation {
+    /// Image checksums cannot validate the labels describing those images.
+    /// Validate receipt structure before displaying or reusing cached evidence.
+    static func validateStructure(_ packet: InspectionPacket) throws {
+        func nearlyEqual(_ lhs: Double, _ rhs: Double) -> Bool { abs(lhs - rhs) <= 0.000_001 }
+        func require(_ condition: Bool, _ detail: String) throws {
+            guard condition else { throw WatchthroughFailure(.operation, "inspection packet structure is invalid: \(detail)") }
+        }
+        try require(packet.sourcePath.hasPrefix("/") && !packet.selector.isEmpty && !packet.sampling.isEmpty, "missing source or selector")
+        try require(packet.rangeStartSeconds.isFinite && packet.rangeEndSeconds.isFinite
+            && packet.rangeEndSeconds > packet.rangeStartSeconds, "invalid packet range")
+        try require((1...300).contains(packet.cells.count)
+            && (1...StripRenderOptions.hardMaximumCells).contains(packet.cellsPerSheet), "invalid cell budget")
+        try require(packet.largestGapSeconds.isFinite && packet.largestGapSeconds >= 0, "invalid largest gap")
+        let expectedSheetCount = packet.cells.count > 1
+            ? Int(ceil(Double(packet.cells.count) / Double(packet.cellsPerSheet))) : 0
+        try require(packet.sheets.count == expectedSheetCount && Set(packet.sheets).count == packet.sheets.count,
+            "sheet count or uniqueness does not match pagination")
+        try require(packet.sheets.allSatisfy { path in
+            !path.contains("/") && path.hasPrefix("strip-") && (path.hasSuffix(".jpg") || path.hasSuffix(".png"))
+        }, "unsafe sheet path")
+        try require(Set(packet.cells.map(\.framePath)).count == packet.cells.count, "duplicate frame paths")
+        try require(packet.cells.allSatisfy { cell in
+            let parts = cell.framePath.split(separator: "/", omittingEmptySubsequences: false)
+            return parts.count == 2 && parts[0] == "frames" && parts[1].hasPrefix("frame-") && parts[1].hasSuffix(".jpg")
+        }, "unsafe frame path")
+        let isV2 = packet.schema == WatchthroughVersion.packetSchema
+        if isV2 {
+            try require(packet.contentFingerprint?.isEmpty == false && packet.evidenceFingerprint?.isEmpty == false,
+                "missing content or evidence identity")
+            try require(packet.maximumFrameWidth.map { (320...8192).contains($0) } == true, "invalid maximum frame dimension")
+            try require(Set(packet.cells.compactMap(\.ordinalBasis)).count == 1, "mixed ordinal bases")
+            guard let selector = try? CLIParser.parseSelector(packet.selector) else {
+                throw WatchthroughFailure(.operation, "inspection packet structure is invalid: invalid image selector")
+            }
+            switch selector {
+            case let .frame(ordinal):
+                try require(packet.cells.count == 1 && packet.cells[0].ordinalBasis == "decoded-global"
+                    && packet.cells[0].ordinal == ordinal, "global ordinal disagrees with frame selector")
+            case let .time(seconds):
+                try require(packet.cells.count == 1 && packet.cells[0].ordinalBasis == "timestamp-only"
+                    && packet.cells[0].ptsSeconds >= seconds - 0.000_001, "timestamp receipt disagrees with time selector")
+            case .overview:
+                try require(packet.cells.count <= 90 && packet.cells.allSatisfy { $0.ordinalBasis == "timestamp-only" },
+                    "overview requires bounded timestamp receipts")
+            case .range, .event:
+                try require(packet.cells.allSatisfy { $0.ordinalBasis == "timestamp-only" || $0.ordinalBasis == "decoded-local-range" },
+                    "temporal range claims global ordinals")
+            case .events, .transcript:
+                try require(false, "selector does not produce image packets")
+            }
+        }
+        var largestGap = 0.0
+        for (index, cell) in packet.cells.enumerated() {
+            try require(cell.index == index, "nonsequential cell index")
+            try require(cell.ptsSeconds.isFinite && cell.intervalStartSeconds.isFinite && cell.intervalEndSeconds.isFinite,
+                "nonfinite cell timing")
+            try require(cell.intervalStartSeconds <= cell.ptsSeconds && cell.ptsSeconds <= cell.intervalEndSeconds,
+                "timestamp is outside its caption interval")
+            try require(cell.intervalStartSeconds >= packet.rangeStartSeconds && cell.intervalEndSeconds <= packet.rangeEndSeconds,
+                "cell interval is outside the packet range")
+            try require(cell.timestamp == CLIParser.formatTime(cell.ptsSeconds), "formatted timestamp disagrees with decoded PTS")
+            if index > 0 {
+                let previous = packet.cells[index - 1]
+                try require(previous.ptsSeconds <= cell.ptsSeconds, "decoded timestamps are not ordered")
+                largestGap = max(largestGap, cell.ptsSeconds - previous.ptsSeconds)
+            }
+            if isV2 {
+                let expectedStart = index == 0 ? packet.rangeStartSeconds : (packet.cells[index - 1].ptsSeconds + cell.ptsSeconds) / 2
+                let expectedEnd = index == packet.cells.count - 1 ? packet.rangeEndSeconds : (cell.ptsSeconds + packet.cells[index + 1].ptsSeconds) / 2
+                try require(nearlyEqual(cell.intervalStartSeconds, expectedStart) && nearlyEqual(cell.intervalEndSeconds, expectedEnd),
+                    "caption interval boundaries disagree with decoded neighbors")
+                switch cell.ordinalBasis {
+                case "decoded-global":
+                    try require(cell.ordinal.map { $0 >= 0 } == true && cell.localOrdinal == nil,
+                        "global ordinal basis lacks a valid global ordinal")
+                    if index > 0 { try require(packet.cells[index - 1].ordinal.map { $0 < cell.ordinal! } == true, "global ordinals are not increasing") }
+                case "decoded-local-range":
+                    let prefix = "every "
+                    let suffix = " decoded frames"
+                    let stride = packet.sampling.hasPrefix(prefix) && packet.sampling.hasSuffix(suffix)
+                        ? Int(packet.sampling.dropFirst(prefix.count).dropLast(suffix.count)) : nil
+                    guard let stride, stride > 0 else {
+                        throw WatchthroughFailure(.operation, "inspection packet structure is invalid: missing decoded sampling stride")
+                    }
+                    let expected = index.multipliedReportingOverflow(by: stride)
+                    try require(cell.ordinal == nil && !expected.overflow && cell.localOrdinal == expected.partialValue,
+                        "regional ordinal disagrees with its decoded sampling stride")
+                case "timestamp-only":
+                    try require(cell.ordinal == nil && cell.localOrdinal == nil, "timestamp-only receipt claims an ordinal")
+                default:
+                    try require(false, "missing or unknown ordinal basis")
+                }
+            }
+        }
+        try require(nearlyEqual(packet.largestGapSeconds, largestGap), "largest gap disagrees with decoded timestamps")
+    }
+
 }
 
 private func posixMessage(_ code: Int32 = errno) -> String {

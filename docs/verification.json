@@ -1,0 +1,71 @@
+{
+  "schema": "watchthrough.verification.v1",
+  "date": "2026-09-06",
+  "tests": {
+    "executed": 133,
+    "passed": 132,
+    "skipped_optional_renderer_benchmark": 1,
+    "failed": 0,
+    "seconds": 14.766,
+    "log": ".scratch/missing-duration-final-tests.log"
+  },
+  "packaged_command_lifecycle": {
+    "packaged_binary_sha256": "284f0f4a4c87d8524514c20325436b9aaaa171c1d66935bc58e777e4f7a0caa9",
+    "cleanup_mode": "trashed",
+    "analysis_original_path_absent": true,
+    "source_sha256_unchanged": true,
+    "retained_files_all_checksums_match": 52,
+    "summary_links_resolve_after_cleanup": 5,
+    "full_transcript_bytes": 340,
+    "full_transcript_sha256_unchanged": true,
+    "all_frame_cells_match_previously_opened_evidence": 35,
+    "overview_cells_opened": 12,
+    "inspected_unique_dense_timestamps": 21
+  },
+  "scope": "Native default-library retention and macOS system Trash were exercised on generated analysis only. Source video and all selected retained evidence survived. No universal video/ASR/thermal guarantee.",
+  "black_box_skill_trial": {
+    "completed": true,
+    "evidence_boundary": "Only requested skill and references, CLI outputs, canonical transcript files, and opened returned frames/sheets. No product source/tests/fixture scripts/benchmark manifests/prior agent output.",
+    "source_types": [
+      "supplied-script slide progression",
+      "silent high-rate synthetic motion"
+    ],
+    "whole_transcript_owned": true,
+    "slides_transcript_bytes": 317,
+    "slides_script_segments": 4,
+    "slides_sampled_frames_opened": 161,
+    "slides_sheets_opened": 15,
+    "motion_consecutive_frames_opened": 13,
+    "motion_detail_frames_opened": 3,
+    "retained_files_checksums_verified": 134,
+    "note_links_verified": 14,
+    "packet_dependencies_verified": 121,
+    "commands_failed": 0,
+    "missed_event_candidate_observed": true,
+    "manual_native_probe_resolved_missed_reveal": true,
+    "single_packet_include_followup": {
+      "retained_files_verified": 18,
+      "note_links_verified": 4,
+      "packet_dependencies_verified": 15,
+      "manual_dependency_enumeration_required": false
+    },
+    "measured_token_or_agent_latency_reduction": false,
+    "remaining_scope": "Event candidates can miss visible changes; event packets include surrounding context; this is not exhaustive visual coverage or 3D reconstruction."
+  },
+  "duration_compatibility": {
+    "valid_unknown_duration_source": true,
+    "baseline_prepared": true,
+    "initial_candidate_failed": true,
+    "final_candidate_prepared": true,
+    "frames": 48,
+    "seconds": 2.0,
+    "exceptional_decode_warning_preserved": true,
+    "global_index_persisted": false,
+    "final_packaged_cli_verified": true
+  },
+  "final_package_guidance": {
+    "no_audio_guidance_points_to_visuals": true,
+    "transcript_timing_scope_explicit": true,
+    "actual_inspection_range_returned": true
+  }
+}

@@ -57,6 +57,25 @@ final class CLITests: XCTestCase {
         XCTAssertEqual(options.transcriber, "auto")
     }
 
+    func testLazyControlsRetentionAndExplicitVerification() throws {
+        guard case let .prepare(prepare) = try CLIParser.parse(["prepare", "/tmp/v.mp4", "--defer-transcript", "--speakers"]).command else { return XCTFail("prepare") }
+        XCTAssertTrue(prepare.deferTranscript)
+        XCTAssertTrue(prepare.speakers)
+        guard case let .inspect(overview) = try CLIParser.parse(["inspect", "/tmp/a", "overview", "--samples", "24"]).command else { return XCTFail("inspect") }
+        XCTAssertEqual(overview.width, 720)
+        XCTAssertEqual(overview.samples, 24)
+        guard case let .status(status) = try CLIParser.parse(["status", "/tmp/a", "--verify"]).command else { return XCTFail("status") }
+        XCTAssertTrue(status.verify)
+        XCTAssertThrowsError(try CLIParser.parse(["status", "--verify"]))
+        XCTAssertThrowsError(try CLIParser.parse(["inspect", "/tmp/a", "overview", "--width", "9000"]))
+        XCTAssertEqual(try CLIParser.parseSelector("transcript"), .transcript)
+        guard case let .retain(retain) = try CLIParser.parse(["retain", "/tmp/a", "--note", "/tmp/n.md", "--include", "inspections/p/packet.json", "--include", "visual/events.json", "--dossier", "/tmp/d.json"]).command else { return XCTFail("retain") }
+        XCTAssertEqual(retain.includes.count, 2)
+        XCTAssertEqual(retain.dossiers.count, 1)
+        guard case let .cleanup(cleanup) = try CLIParser.parse(["cleanup", "/tmp/a"]).command else { return XCTFail("cleanup") }
+        XCTAssertFalse(cleanup.apply)
+    }
+
     func testTimeAndSamplingParsing() throws {
         XCTAssertEqual(try CLIParser.parseTime("12.5"), 12.5, accuracy: 0.0001)
         XCTAssertEqual(try CLIParser.parseTime("12:30.250"), 750.25, accuracy: 0.0001)

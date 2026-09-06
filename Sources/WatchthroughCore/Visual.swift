@@ -64,11 +64,14 @@ public enum VisualAnalyzer {
         let filter = "fps=fps=\(fpsText):start_time=\(firstPTSText),scale=\(size.width):\(size.height):flags=bilinear"
         let arguments = [
             "-hide_banner", "-loglevel", "error", "-nostdin",
+        ] + MediaResourcePolicy.filterArguments + MediaResourcePolicy.decoderArguments + [
             "-copyts", "-i", source.path,
             "-map", "0:v:0", "-an", "-sn", "-dn",
             "-vf", filter,
             "-frames:v", String(sampleLimit),
-            "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1",
+            "-pix_fmt", "rgb24",
+        ] + MediaResourcePolicy.encoderArguments + [
+            "-f", "rawvideo", "pipe:1",
         ]
 
         let accumulator = VisualAccumulator(
@@ -442,78 +445,25 @@ private enum RawRGBDecoder {
         executable: String,
         arguments: [String],
         bytesPerFrame: Int,
-        consume: (Data) throws -> Void
+        consume: @escaping (Data) throws -> Void
     ) throws {
-        let process = Process()
-        process.executableURL = try Tooling.require(executable)
-        process.arguments = arguments
-        process.environment = ProcessRunner.constrainedEnvironment()
-        let output = Pipe()
-        let errors = Pipe()
-        process.standardOutput = output
-        process.standardError = errors
-
-        do {
-            try process.run()
-        } catch {
-            throw WatchthroughFailure(.readiness, "Could not start ffmpeg at \(executable): \(error.localizedDescription)")
-        }
-        output.fileHandleForWriting.closeFile()
-        errors.fileHandleForWriting.closeFile()
-
-        let errorSlot = LockedData()
-        let errorReader = DispatchGroup()
-        errorReader.enter()
-        DispatchQueue.global(qos: .utility).async {
-            errorSlot.set(errors.fileHandleForReading.readDataToEndOfFile())
-            errorReader.leave()
-        }
-
         var pending = Data()
-        do {
-            while let chunk = try output.fileHandleForReading.read(upToCount: max(bytesPerFrame, 64 * 1_024)),
-                  !chunk.isEmpty {
+        let result = try ProcessRunner.run(
+            executable,
+            arguments: arguments,
+            timeout: 14_400,
+            stdoutConsumer: { chunk in
                 pending.append(chunk)
                 while pending.count >= bytesPerFrame {
-                    let frame = pending.prefix(bytesPerFrame)
-                    try consume(Data(frame))
+                    try consume(Data(pending.prefix(bytesPerFrame)))
                     pending.removeFirst(bytesPerFrame)
                 }
             }
-        } catch {
-            process.terminate()
-            process.waitUntilExit()
-            errorReader.wait()
-            throw error
-        }
-
-        process.waitUntilExit()
-        errorReader.wait()
-        let errorData = errorSlot.value
-        if process.terminationStatus != 0 {
-            let message = String(data: errorData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-            throw WatchthroughFailure(.operation, "ffmpeg visual scan failed\(message.map { ": \($0)" } ?? ".")")
-        }
+        )
+        try result.requireSuccess("ffmpeg visual scan failed")
         guard pending.isEmpty else {
             throw WatchthroughFailure(.operation, "ffmpeg ended with an incomplete RGB frame.")
         }
-    }
-}
-
-private final class LockedData: @unchecked Sendable {
-    private let lock = NSLock()
-    private var storage = Data()
-
-    var value: Data {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage
-    }
-
-    func set(_ value: Data) {
-        lock.lock()
-        storage = value
-        lock.unlock()
     }
 }
 
@@ -527,7 +477,7 @@ public struct ExtractedFrame: Equatable, Sendable {
     }
 }
 
-/// Exact ordinal extraction through a single ffmpeg invocation.
+/// Exact global ordinals, using verified PTS seeks where timestamps are unique.
 public enum FrameExtractor {
     public static func extract(
         source: URL,
@@ -535,7 +485,8 @@ public enum FrameExtractor {
         frameIndex: [FramePoint],
         destinationDirectory: URL,
         maximumWidth: Int? = 1_920,
-        ffmpegPath: String = "ffmpeg"
+        ffmpegPath: String = "ffmpeg",
+        media: MediaInfo? = nil
     ) throws -> [ExtractedFrame] {
         let selected = Dictionary(
             selectedFrames.map { ($0.ordinal, $0) },
@@ -551,6 +502,20 @@ public enum FrameExtractor {
             throw WatchthroughFailure(.usage, "Selected frames must belong to the supplied decoded frame index.")
         }
 
+        // PTS identifies most indexed frames without assuming a seek-local
+        // ordinal. Duplicate timestamps retain true global decode below.
+        let uniqueTimes = selected.allSatisfy { point in
+            let prior = point.ordinal > 0 ? frameIndex[point.ordinal - 1].ptsSeconds : -.infinity
+            let next = point.ordinal + 1 < frameIndex.count ? frameIndex[point.ordinal + 1].ptsSeconds : .infinity
+            return point.ptsSeconds - prior > 0.000_002 && next - point.ptsSeconds > 0.000_002
+        }
+        if uniqueTimes {
+            return try extractVerifiedTimes(
+                source: source, selected: selected, media: media,
+                destinationDirectory: destinationDirectory, maximumWidth: maximumWidth, ffmpegPath: ffmpegPath
+            )
+        }
+
         try FileManager.default.createDirectory(
             at: destinationDirectory,
             withIntermediateDirectories: true
@@ -559,40 +524,32 @@ public enum FrameExtractor {
         try FileManager.default.createDirectory(at: operationDirectory, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: operationDirectory) }
 
-        let firstTarget = selected[0]
-        let leadThreshold = firstTarget.ptsSeconds - 1
-        let anchorOrdinal = lowerBoundPTS(leadThreshold, in: frameIndex)
-        let seekPTS: Double
-        if anchorOrdinal == 0 {
-            seekPTS = frameIndex[0].ptsSeconds
-        } else {
-            seekPTS = (frameIndex[anchorOrdinal - 1].ptsSeconds + frameIndex[anchorOrdinal].ptsSeconds) / 2
-        }
-        let seekSeconds = max(0, seekPTS - frameIndex[0].ptsSeconds)
+        // Duplicate PTS requires decoding from the true beginning so n is a
+        // proven global ordinal. This slower path is explicit and uncommon.
+        let anchorOrdinal = 0
         let selection = selected
             .map { "eq(n\\,\($0.ordinal - anchorOrdinal))" }
             .joined(separator: "+")
         var filter = "select=\(selection)"
         if let maximumWidth {
-            let evenWidth = max(2, maximumWidth - maximumWidth % 2)
-            filter += ",scale=min(\(evenWidth)\\,iw):-2:flags=lanczos"
+            filter += ",\(FrameImageGeometry.scaleFilter(maximumDimension: maximumWidth))"
         }
+        // The caller already owns global ordinal/PTS evidence. Give JPEG's
+        // internal encoder a distinct tick for each selected image so more than
+        // one worker's worth of equal source timestamps cannot be dropped.
+        filter += ",setpts=N"
         let outputPattern = operationDirectory.appendingPathComponent("frame-%06d.jpg").path
         var arguments = [
             "-hide_banner", "-loglevel", "error", "-nostdin",
             "-copyts",
-        ]
-        if seekSeconds > 0.000_000_5 {
-            arguments += [
-                "-ss",
-                String(format: "%.9f", locale: Locale(identifier: "en_US_POSIX"), seekSeconds),
-            ]
-        }
+        ] + MediaResourcePolicy.filterArguments + MediaResourcePolicy.decoderArguments
         arguments += [
             "-i", source.path,
             "-map", "0:v:0", "-an", "-sn", "-dn",
             "-vf", filter,
-            "-fps_mode", "vfr", "-q:v", "2", "-start_number", "0",
+        ] + MediaResourcePolicy.encoderArguments + [
+            "-fps_mode", "passthrough", "-enc_time_base:v", "filter",
+            "-q:v", "2", "-start_number", "0",
             "-frames:v", String(selected.count),
             outputPattern,
         ]
@@ -625,19 +582,50 @@ public enum FrameExtractor {
         return result
     }
 
-    private static func lowerBoundPTS(_ target: Double, in frames: [FramePoint]) -> Int {
-        var low = 0
-        var high = frames.count
-        while low < high {
-            let middle = (low + high) / 2
-            if frames[middle].ptsSeconds < target {
-                low = middle + 1
-            } else {
-                high = middle
+    private static func extractVerifiedTimes(
+        source: URL, selected: [FramePoint], media suppliedMedia: MediaInfo?,
+        destinationDirectory: URL, maximumWidth: Int?, ffmpegPath: String
+    ) throws -> [ExtractedFrame] {
+        try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
+        for point in selected {
+            let target = destinationDirectory.appendingPathComponent(String(format: "frame-o%08d.jpg", point.ordinal))
+            guard !FileManager.default.fileExists(atPath: target.path) else {
+                throw WatchthroughFailure(.operation, "Refusing to overwrite existing frame at \(target.path).")
             }
         }
-        return min(low, frames.count - 1)
+        // Video PTS alone cannot establish the demuxer's seek origin: audio
+        // may precede the first video frame. Reuse caller metadata when present,
+        // and resolve the real container origin for older/direct API callers.
+        let media: MediaInfo
+        if let suppliedMedia, suppliedMedia.containerStartPTS != nil {
+            media = suppliedMedia
+        } else {
+            media = try MediaProbe.metadata(source, ffprobe: Tooling.require("ffprobe").path)
+        }
+        var groups: [[FramePoint]] = []
+        for point in selected {
+            if let last = groups.last?.last, point.ptsSeconds - last.ptsSeconds <= 2 {
+                groups[groups.count - 1].append(point)
+            } else {
+                groups.append([point])
+            }
+        }
+        var result: [ExtractedFrame] = []
+        for group in groups {
+            let frames = try TemporalExtractor.exact(
+                source: source, media: media, points: group,
+                destinationDirectory: destinationDirectory, maximumWidth: maximumWidth, ffmpegPath: ffmpegPath
+            )
+            for (frame, point) in zip(frames, group) {
+                let target = destinationDirectory.appendingPathComponent(String(format: "frame-o%08d.jpg", point.ordinal))
+                try FileManager.default.moveItem(at: frame.url, to: target)
+                result.append(ExtractedFrame(ordinal: point.ordinal, url: target))
+            }
+        }
+        return result
     }
+
+
 }
 
 private enum SimpleProcess {

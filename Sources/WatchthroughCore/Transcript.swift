@@ -28,8 +28,11 @@ public enum TranscriptFiles {
 
     public static func writeText(_ transcript: CanonicalTranscript, to url: URL) throws {
         try ensureParent(of: url)
-        try Data((readableText(transcript) + "\n").utf8)
-            .write(to: url, options: .atomic)
+        try textData(transcript).write(to: url, options: .atomic)
+    }
+
+    public static func textData(_ transcript: CanonicalTranscript) -> Data {
+        Data((readableText(transcript) + "\n").utf8)
     }
 
     private static func readableText(_ transcript: CanonicalTranscript) -> String {
@@ -314,6 +317,8 @@ public enum TranscriptSidecar {
         var pieces: [TimedCaptionPiece] = []
         var segments: [TranscriptSegment] = []
         var hasSubstantiveSegmentOnlyCue = false
+        var hasMultiwordTimedPiece = false
+        var priorTimedCue: (text: String, end: Double)?
         for block in source.components(separatedBy: "\n\n") {
             let lines = block.components(separatedBy: "\n")
             guard let timingIndex = lines.firstIndex(where: { $0.contains("-->") }) else { continue }
@@ -325,30 +330,52 @@ public enum TranscriptSidecar {
                   cueEnd >= cueStart else { continue }
 
             let contentLines = Array(lines.dropFirst(timingIndex + 1))
-            let timedLines = contentLines.compactMap { line -> [TimedCaptionPiece]? in
-                let result = timedPieces(in: line, cueStart: cueStart, cueEnd: cueEnd)
-                return result.isEmpty ? nil : result
+            let parsedLines = contentLines.map { line in
+                (text: line, pieces: timedPieces(in: line, cueStart: cueStart, cueEnd: cueEnd))
             }
-            if !timedLines.isEmpty {
-                for linePieces in timedLines {
+            let newTimedLineIndex = priorTimedCue.flatMap { prior in
+                parsedLines.firstIndex { line in
+                    !line.pieces.isEmpty && renderPieces(line.pieces.map(\.text)) != prior.text
+                }
+            }
+            var currentTimedTexts: [String] = []
+            for (lineIndex, line) in parsedLines.enumerated() {
+                let linePieces = line.pieces
+                if !linePieces.isEmpty {
                     pieces.append(contentsOf: linePieces)
+                    hasMultiwordTimedPiece = hasMultiwordTimedPiece || linePieces.contains {
+                        $0.text.split(whereSeparator: \.isWhitespace).count > 1
+                    }
+                    let text = renderPieces(linePieces.map(\.text))
+                    currentTimedTexts.append(text)
                     segments.append(TranscriptSegment(
                         id: "",
-                        text: renderPieces(linePieces.map(\.text)),
+                        text: text,
                         startSeconds: linePieces.first?.start,
                         endSeconds: linePieces.last?.end,
                         timingSource: "vtt-inline"
                     ))
+                    continue
                 }
-            } else if cueEnd - cueStart > 0.05 {
                 let text = decodeEntities(
-                    contentLines.joined(separator: "\n")
+                    line.text
                         .replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
                 )
                 .components(separatedBy: .whitespacesAndNewlines)
                 .filter { !$0.isEmpty }
                 .joined(separator: " ")
                 guard !text.isEmpty else { continue }
+                // A rolling cue carries the preceding line above new inline-
+                // timed content. Standalone repetitions are ambiguous, however
+                // brief or adjacent, and must remain in the transcript.
+                if let priorTimedCue,
+                   let newTimedLineIndex,
+                   lineIndex < newTimedLineIndex,
+                   cueStart >= priorTimedCue.end - 0.000_001,
+                   cueStart <= priorTimedCue.end + 0.1,
+                   text == priorTimedCue.text {
+                    continue
+                }
                 hasSubstantiveSegmentOnlyCue = true
                 segments.append(TranscriptSegment(
                     id: "",
@@ -357,6 +384,9 @@ public enum TranscriptSidecar {
                     endSeconds: cueEnd,
                     timingSource: "vtt"
                 ))
+            }
+            if !currentTimedTexts.isEmpty {
+                priorTimedCue = (currentTimedTexts.joined(separator: " "), cueEnd)
             }
         }
         guard !pieces.isEmpty else { return nil }
@@ -390,7 +420,7 @@ public enum TranscriptSidecar {
         let language = source.components(separatedBy: .newlines)
             .first { $0.lowercased().hasPrefix("language:") }
             .map { String($0.dropFirst("language:".count)).trimmingCharacters(in: .whitespaces) }
-        if hasSubstantiveSegmentOnlyCue {
+        if hasSubstantiveSegmentOnlyCue || hasMultiwordTimedPiece {
             return CanonicalTranscript(
                 provider: "sidecar",
                 model: "vtt",
@@ -398,7 +428,9 @@ public enum TranscriptSidecar {
                 timingPrecision: .segment,
                 text: segments.map(\.text).joined(separator: "\n"),
                 segments: segments,
-                warnings: ["Mixed WebVTT timing was preserved at segment precision because not every substantive cue had inline word timestamps."]
+                warnings: [hasSubstantiveSegmentOnlyCue
+                    ? "Mixed WebVTT timing was preserved at segment precision because not every substantive cue had inline word timestamps."
+                    : "WebVTT inline timestamps bounded multiword spans, so timing was preserved at segment precision."]
             )
         }
         return CanonicalTranscript(
@@ -541,18 +573,21 @@ public enum MacParakeetTranscriber {
                 timeout: 5
             )
             let helpText = help.stdout + help.stderr
-            let health = try ProcessRunner.run(
+            // The broad `health` command opens the shared app database, reads
+            // transcription history, and inspects devices/calendars. Model
+            // readiness alone needs none of those operations or a warm-up.
+            let models = try ProcessRunner.run(
                 "/usr/bin/env",
                 arguments: isolatedInvocation(
                     executable: executable.path,
-                    arguments: ["health", "--json"],
+                    arguments: ["models", "status", "--json"],
                     additions: privacyEnvironment
                 ),
                 timeout: 10
             )
-            let healthDocument = try StableJSON.decode(
-                MacParakeetHealth.self,
-                from: health.stdoutData
+            let modelStatus = try StableJSON.decode(
+                MacParakeetModelStatus.self,
+                from: models.stdoutData
             )
             let versionOutput = try? ProcessRunner.run(
                 "/usr/bin/env",
@@ -563,38 +598,36 @@ public enum MacParakeetTranscriber {
                 ),
                 timeout: 5
             )
-            let version = versionOutput.flatMap { output in
+            let version = versionOutput.flatMap { output -> String? in
+                guard output.succeeded else { return nil }
                 let text = output.stdout.isEmpty ? output.stderr : output.stdout
                 return text.split(whereSeparator: \Character.isNewline).first.map(String.init)
             }
             let supportsSpeakerDetection = helpText.contains("--speaker-detection")
             return MacParakeetCapability(
-                available: help.exitCode == 0
-                    && health.exitCode == 0
-                    && healthDocument.speechStack.speechModelCached
+                available: help.succeeded
+                    && models.succeeded
+                    && modelStatus.speechModelCached
                     && supportsSpeakerDetection,
                 executable: executable.path,
                 version: version,
                 supportsSpeakerDetection: supportsSpeakerDetection,
-                speakerModelsCached: healthDocument.speechStack.speakerModelsCached
+                speakerModelsCached: modelStatus.speakerModelsCached
             )
         } catch {
             return MacParakeetCapability(available: false, executable: executable.path)
         }
     }
 
-    private struct MacParakeetHealth: Decodable {
-        struct SpeechStack: Decodable {
-            var speechModelCached: Bool
-            var speakerModelsCached: Bool
-        }
-
-        var speechStack: SpeechStack
+    private struct MacParakeetModelStatus: Decodable {
+        var speechModelCached: Bool
+        var speakerModelsCached: Bool
     }
 
     public static func transcribe(
         input: URL,
-        speakerDetection: Bool = true,
+        capability suppliedCapability: MacParakeetCapability? = nil,
+        speakers: Bool = false,
         executable name: String = "macparakeet-cli",
         rawResponseURL: URL? = nil,
         timeout: TimeInterval = 7_200
@@ -602,7 +635,7 @@ public enum MacParakeetTranscriber {
         guard input.isFileURL, FileManager.default.fileExists(atPath: input.path) else {
             throw WatchthroughFailure(.usage, "MacParakeet requires an existing local media file.")
         }
-        let capability = probe(executable: name)
+        let capability = suppliedCapability ?? probe(executable: name)
         guard capability.available, let executable = capability.executable else {
             throw WatchthroughFailure(.readiness, "macparakeet-cli is not available.")
         }
@@ -625,7 +658,7 @@ public enum MacParakeetTranscriber {
             "--database", privateDatabase.path,
             "--no-history",
         ]
-        let enableSpeakerDetection = speakerDetection && capability.speakerModelsCached
+        let enableSpeakerDetection = speakers && capability.speakerModelsCached
         arguments += ["--speaker-detection", enableSpeakerDetection ? "on" : "off"]
         let output = try ProcessRunner.run(
             "/usr/bin/env",
@@ -641,7 +674,7 @@ public enum MacParakeetTranscriber {
             try TranscriptFiles.preserveRawResponse(output.stdoutData, at: rawResponseURL)
         }
         var transcript = try TranscriptNormalizer.macParakeet(output.stdoutData)
-        if speakerDetection && !capability.speakerModelsCached {
+        if speakers && !capability.speakerModelsCached {
             transcript.warnings.append(
                 "Speaker detection was disabled because its local models were not already cached."
             )
@@ -923,7 +956,7 @@ public enum TranscriptNormalizer {
             ?? renderTokens(words)
         return honestCanonical(CanonicalTranscript(
             provider: "macparakeet",
-            model: string(payload["engine"]) ?? string(payload["model"]),
+            model: string(payload["engineVariant"]) ?? string(payload["model"]) ?? string(payload["engine"]),
             language: string(payload["languageCode"]) ?? string(payload["language"]),
             timingPrecision: !words.isEmpty ? .word : (!segments.isEmpty ? .segment : .none),
             speakersAvailable: words.contains { $0.speaker != nil } || segments.contains { $0.speaker != nil },

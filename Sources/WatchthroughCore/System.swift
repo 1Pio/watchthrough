@@ -122,7 +122,8 @@ public enum ProcessRunner {
         currentDirectory: URL? = nil,
         environment overrides: [String: String]? = nil,
         inheritEnvironment: Bool = true,
-        timeout: TimeInterval? = nil
+        timeout: TimeInterval? = nil,
+        stdoutConsumer: ((Data) throws -> Void)? = nil
     ) throws -> ProcessOutput {
         if let timeout, !timeout.isFinite || timeout <= 0 {
             throw WatchthroughFailure(.usage, "process timeout must be greater than zero")
@@ -147,7 +148,7 @@ public enum ProcessRunner {
         )
         defer { ProcessSignalRelay.unregister(child.processIdentifier) }
 
-        var stdout = CapturedPipe(readDescriptor: child.standardOutput)
+        var stdout = CapturedPipe(readDescriptor: child.standardOutput, consume: stdoutConsumer)
         var stderr = CapturedPipe(readDescriptor: child.standardError)
         var waitStatus: Int32 = 0
         var childExited = false
@@ -415,9 +416,14 @@ public enum FileSHA256 {
         defer { try? handle.close() }
 
         var hasher = SHA256()
-        while let data = try handle.read(upToCount: chunkSize), !data.isEmpty {
+        // FileHandle returns Foundation-backed buffers. On Darwin their
+        // autoreleased storage otherwise accumulates for the entire invocation,
+        // making nominally chunked hashing consume memory proportional to input.
+        while try autoreleasepool(invoking: {
+            guard let data = try handle.read(upToCount: chunkSize), !data.isEmpty else { return false }
             hasher.update(data: data)
-        }
+            return true
+        }) {}
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 }
@@ -602,9 +608,11 @@ private struct SpawnedProcess {
 private struct CapturedPipe {
     private(set) var descriptor: Int32?
     private(set) var data = Data()
+    private let consume: ((Data) throws -> Void)?
 
-    init(readDescriptor: Int32) {
+    init(readDescriptor: Int32, consume: ((Data) throws -> Void)? = nil) {
         descriptor = readDescriptor
+        self.consume = consume
     }
 
     var isOpen: Bool { descriptor != nil }
@@ -615,7 +623,11 @@ private struct CapturedPipe {
         for _ in 0..<16 {
             let count = Darwin.read(descriptor, &buffer, buffer.count)
             if count > 0 {
-                data.append(contentsOf: buffer.prefix(Int(count)))
+                if let consume {
+                    try consume(Data(buffer.prefix(Int(count))))
+                } else {
+                    data.append(contentsOf: buffer.prefix(Int(count)))
+                }
                 continue
             }
             if count == 0 {
@@ -633,4 +645,23 @@ private struct CapturedPipe {
         Darwin.close(descriptor)
         self.descriptor = nil
     }
+}
+
+/// Resource policy shared by every media subprocess. Serial work with bounded
+/// decoder, filter and encoder pools avoids FFmpeg's all-core default. An
+/// explicit override is still clamped; hot/low-power systems use one thread.
+public enum MediaResourcePolicy {
+    public static var threads: Int {
+        let process = ProcessInfo.processInfo
+        if process.isLowPowerModeEnabled || process.thermalState == .serious || process.thermalState == .critical {
+            return 1
+        }
+        return min(8, max(1, Int(process.environment["WATCHTHROUGH_THREADS"] ?? "") ?? 2))
+    }
+
+    public static var decoderArguments: [String] { ["-threads", String(threads)] }
+    public static var filterArguments: [String] {
+        ["-filter_threads", String(threads), "-filter_complex_threads", String(threads)]
+    }
+    public static var encoderArguments: [String] { ["-threads", String(threads)] }
 }

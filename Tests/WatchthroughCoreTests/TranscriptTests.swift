@@ -417,7 +417,7 @@ final class TranscriptTests: XCTestCase {
         XCTAssertEqual(assigned[1].caption, "At the cut")
     }
 
-    func testRollingVTTUsesInlineWordTimingWithoutRepeatingPriorLines() throws {
+    func testRollingVTTRetainsAmbiguousStandaloneCueButRemovesStructuredCarryover() throws {
         let captions = temporaryDirectory.appendingPathComponent("rolling.vtt")
         try Data(
             """
@@ -438,8 +438,29 @@ final class TranscriptTests: XCTestCase {
         ).write(to: captions)
 
         let transcript = try TranscriptSidecar.load(captions)
-        XCTAssertEqual(transcript.timingPrecision, .word)
+        XCTAssertEqual(transcript.timingPrecision, .segment)
         XCTAssertEqual(transcript.language, "en")
+        XCTAssertEqual(transcript.segments.map(\.text), ["when it comes", "when it comes", "Roblox Studio"])
+        XCTAssertEqual(transcript.segments[1].startSeconds, 1)
+        XCTAssertEqual(transcript.segments[1].endSeconds, 1.01)
+    }
+
+    func testRollingVTTUsesInlineWordTimingForStructuredCarryover() throws {
+        let captions = temporaryDirectory.appendingPathComponent("rolling-inline.vtt")
+        try Data("""
+        WEBVTT
+        Language: en
+
+        00:00:00.000 --> 00:00:01.000
+        when<00:00:00.200><c> it</c><00:00:00.500><c> comes</c>
+
+        00:00:01.010 --> 00:00:02.000
+        when it comes
+        Roblox<00:00:01.400><c> Studio</c>
+
+        """.utf8).write(to: captions)
+        let transcript = try TranscriptSidecar.load(captions)
+        XCTAssertEqual(transcript.timingPrecision, .word)
         XCTAssertEqual(transcript.text, "when it comes Roblox Studio")
         XCTAssertEqual(transcript.words.map(\.text), ["when", "it", "comes", "Roblox", "Studio"])
         XCTAssertEqual(transcript.words[0].startSeconds, 0, accuracy: 0.000_001)
@@ -501,14 +522,89 @@ final class TranscriptTests: XCTestCase {
         XCTAssertEqual(result.rawResponse, try Data(contentsOf: input))
     }
 
+    func testVTTInlineTimestampSpansDoNotInventWordPrecision() throws {
+        let captions = temporaryDirectory.appendingPathComponent("multiword.vtt")
+        try Data("""
+        WEBVTT
+
+        00:00:00.000 --> 00:00:02.000
+        First two words<00:00:01.000><c> and more</c>
+
+        """.utf8).write(to: captions)
+        let transcript = try TranscriptSidecar.load(captions)
+        XCTAssertEqual(transcript.timingPrecision, .segment)
+        XCTAssertTrue(transcript.words.isEmpty)
+        XCTAssertEqual(transcript.text, "First two words and more")
+        XCTAssertTrue(transcript.warnings.contains { $0.contains("multiword") })
+    }
+
+    func testVTTKeepsNewUntimedLineAlongsideTimedLineAndBriefCue() throws {
+        let captions = temporaryDirectory.appendingPathComponent("mixed-lines.vtt")
+        try Data("""
+        WEBVTT
+
+        00:00:00.000 --> 00:00:01.000
+        New caption line
+        Hello<00:00:00.500><c> world</c>
+
+        00:00:01.000 --> 00:00:01.025
+        A brief correction
+
+        """.utf8).write(to: captions)
+        let transcript = try TranscriptSidecar.load(captions)
+        XCTAssertEqual(transcript.timingPrecision, .segment)
+        XCTAssertEqual(transcript.segments.map(\.text), ["New caption line", "Hello world", "A brief correction"])
+        let output = temporaryDirectory.appendingPathComponent("mixed-lines.txt")
+        try TranscriptFiles.writeText(transcript, to: output)
+        let readable = try String(contentsOf: output, encoding: .utf8)
+        XCTAssertTrue(readable.contains("New caption line"))
+        XCTAssertTrue(readable.contains("A brief correction"))
+    }
+
+    func testVTTKeepsLegitimateRepeatedPhraseAfterAnInterval() throws {
+        let captions = temporaryDirectory.appendingPathComponent("repeated-later.vtt")
+        try Data("""
+        WEBVTT
+
+        00:00:00.000 --> 00:00:01.000
+        Again<00:00:00.500><c> please</c>
+
+        00:00:03.000 --> 00:00:04.000
+        Again please
+
+        """.utf8).write(to: captions)
+        let transcript = try TranscriptSidecar.load(captions)
+        XCTAssertEqual(transcript.timingPrecision, .segment)
+        XCTAssertEqual(transcript.segments.map(\.text), ["Again please", "Again please"])
+    }
+
+    func testVTTKeepsImmediatelyRepeatedStandaloneSpeech() throws {
+        let captions = temporaryDirectory.appendingPathComponent("repeated-immediately.vtt")
+        try Data("""
+        WEBVTT
+
+        00:00:00.000 --> 00:00:01.000
+        Again<00:00:00.500><c> please</c>
+
+        00:00:01.000 --> 00:00:02.000
+        Again please
+
+        """.utf8).write(to: captions)
+        let transcript = try TranscriptSidecar.load(captions)
+        XCTAssertEqual(transcript.timingPrecision, .segment)
+        XCTAssertEqual(transcript.segments.map(\.text), ["Again please", "Again please"])
+        XCTAssertEqual(transcript.segments.map(\.startSeconds), [0, 1])
+        XCTAssertEqual(transcript.segments.map(\.endSeconds), [1, 2])
+    }
+
     func testMacParakeetProbeIsPrivateAndNeverRequestsUncachedSpeakerModels() throws {
         let executable = temporaryDirectory.appendingPathComponent("macparakeet-fixture.sh")
         let log = temporaryDirectory.appendingPathComponent("macparakeet-invocations.txt")
         let script = """
         #!/bin/sh
         printf '%s|%s|%s\n' "${MACPARAKEET_TELEMETRY-unset}" "${DO_NOT_TRACK-unset}" "$*" >> '\(log.path)'
-        if [ "$1" = "health" ]; then
-          printf '%s\n' '{"speechStack":{"speechModelCached":true,"speakerModelsCached":false}}'
+        if [ "$1" = "models" ] && [ "$2" = "status" ]; then
+          printf '%s\n' '{"speechModelCached":true,"speakerModelsCached":false}'
           exit 0
         fi
         if [ "$1" = "--version" ]; then
@@ -541,6 +637,8 @@ final class TranscriptTests: XCTestCase {
 
         let run = try MacParakeetTranscriber.transcribe(
             input: input,
+            capability: capability,
+            speakers: true,
             executable: executable.path,
             timeout: 5
         )
@@ -553,6 +651,8 @@ final class TranscriptTests: XCTestCase {
             .split(whereSeparator: \Character.isNewline)
             .map(String.init)
         XCTAssertTrue(invocations.allSatisfy { $0.hasPrefix("0|1|") })
+        XCTAssertEqual(invocations.count, 4, "The preparation owner can pass its one readiness probe into transcription.")
+        XCTAssertFalse(invocations.contains { $0.contains("|health") })
         XCTAssertTrue(invocations.contains { $0.contains("--speaker-detection off") })
         let transcription = try XCTUnwrap(invocations.last { line in
             line.contains("transcribe \(input.path)")
@@ -563,6 +663,48 @@ final class TranscriptTests: XCTestCase {
         let database = arguments[databaseFlag + 1]
         XCTAssertTrue(database.contains("watchthrough-macparakeet-"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: database))
+    }
+
+    func testMacParakeetLeavesCachedSpeakerModelsUnusedUnlessRequested() throws {
+        let executable = temporaryDirectory.appendingPathComponent("speaker-default-fixture.sh")
+        let log = temporaryDirectory.appendingPathComponent("speaker-default-invocations.txt")
+        try Data("""
+        #!/bin/sh
+        printf '%s\\n' "$*" >> '\(log.path)'
+        printf '%s\\n' '{"ok":true,"transcription":{"engine":"parakeet","engineVariant":"parakeet-tdt-v3","rawTranscript":"One speaker","wordTimestamps":[{"word":"One","startMs":0,"endMs":200},{"word":"speaker","startMs":200,"endMs":500}]}}'
+        """.utf8).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        let input = temporaryDirectory.appendingPathComponent("speaker.wav")
+        try Data("fixture".utf8).write(to: input)
+        let capability = MacParakeetCapability(
+            available: true,
+            executable: executable.path,
+            supportsSpeakerDetection: true,
+            speakerModelsCached: true
+        )
+
+        let run = try MacParakeetTranscriber.transcribe(input: input, capability: capability, timeout: 5)
+        XCTAssertEqual(run.transcript.model, "parakeet-tdt-v3")
+        let invocations = try String(contentsOf: log, encoding: .utf8).split(whereSeparator: \.isNewline)
+        XCTAssertEqual(invocations.count, 1)
+        XCTAssertTrue(invocations[0].contains("--speaker-detection off"))
+
+        _ = try MacParakeetTranscriber.transcribe(input: input, capability: capability, speakers: true, timeout: 5)
+        let allInvocations = try String(contentsOf: log, encoding: .utf8).split(whereSeparator: \.isNewline)
+        XCTAssertEqual(allInvocations.count, 2)
+        XCTAssertTrue(allInvocations[1].contains("--speaker-detection on"))
+    }
+
+    func testMacParakeetRefusesUnavailableLocalModelsBeforeLaunchingInference() throws {
+        let input = temporaryDirectory.appendingPathComponent("missing-model.wav")
+        try Data("fixture".utf8).write(to: input)
+        XCTAssertThrowsError(try MacParakeetTranscriber.transcribe(
+            input: input,
+            capability: MacParakeetCapability(available: false, executable: "/must-not-launch"),
+            timeout: 1
+        )) { error in
+            XCTAssertEqual((error as? WatchthroughFailure)?.category, .readiness)
+        }
     }
 
     func testNamedAdapterTimeoutAndMalformedOutputFailWithoutEchoingInput() throws {

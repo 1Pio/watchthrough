@@ -4,10 +4,19 @@ import Foundation
 import ImageIO
 import UniformTypeIdentifiers
 
+public enum StripImageFormat: String, Codable, Sendable {
+    case jpeg
+    case png
+
+    public var fileExtension: String { self == .jpeg ? "jpg" : "png" }
+}
+
 public struct StripRenderOptions: Equatable, Sendable {
     public static let hardMaximumCells = 20
     public static let hardMaximumStripWidth = 6_000
     public static let hardMaximumColumns = 5
+    public static let hardMaximumImageHeight = 640
+    public static let hardMaximumCanvasPixels = 12_000_000
 
     public var maximumCellsPerSheet: Int
     public var maximumColumns: Int
@@ -15,6 +24,8 @@ public struct StripRenderOptions: Equatable, Sendable {
     public var minimumCellWidth: Int
     public var maximumCellWidth: Int
     public var maximumCaptionLines: Int
+    public var format: StripImageFormat
+    public var jpegQuality: Double
 
     public init(
         maximumCellsPerSheet: Int = 15,
@@ -22,7 +33,9 @@ public struct StripRenderOptions: Equatable, Sendable {
         preferredCellWidth: Int = 360,
         minimumCellWidth: Int = 280,
         maximumCellWidth: Int = 420,
-        maximumCaptionLines: Int = 4
+        maximumCaptionLines: Int = 4,
+        format: StripImageFormat = .jpeg,
+        jpegQuality: Double = 0.88
     ) {
         self.maximumCellsPerSheet = min(Self.hardMaximumCells, max(1, maximumCellsPerSheet))
         self.maximumColumns = min(Self.hardMaximumColumns, max(1, maximumColumns))
@@ -30,10 +43,12 @@ public struct StripRenderOptions: Equatable, Sendable {
         self.maximumCellWidth = min(420, max(self.minimumCellWidth, maximumCellWidth))
         self.preferredCellWidth = min(self.maximumCellWidth, max(self.minimumCellWidth, preferredCellWidth))
         self.maximumCaptionLines = min(4, max(1, maximumCaptionLines))
+        self.format = format
+        self.jpegQuality = jpegQuality.isFinite ? min(1, max(0.5, jpegQuality)) : 0.88
     }
 }
 
-/// Renders compact, transcript-captioned PNG contact sheets without invoking a
+/// Renders compact, transcript-captioned contact sheets without invoking a
 /// second image tool. Pages and rows are balanced for agent legibility.
 public enum StripRenderer {
     public static func balancedPageSizes(itemCount: Int, maximumPerPage: Int = 15) -> [Int] {
@@ -67,7 +82,7 @@ public enum StripRenderer {
         return (columns, rows)
     }
 
-    /// Renders all packet cells and returns the PNG paths in page order.
+    /// Renders all packet cells and returns the sheet paths in page order.
     public static func render(
         cells: [PacketCell],
         framesBaseURL: URL,
@@ -90,7 +105,7 @@ public enum StripRenderer {
         var output: [URL] = []
         for (index, page) in pages.enumerated() {
             let suffix = String(format: "%02d", index + 1)
-            let destination = destinationDirectory.appendingPathComponent("\(basename)-\(suffix).png")
+            let destination = destinationDirectory.appendingPathComponent("\(basename)-\(suffix).\(options.format.fileExtension)")
             guard !FileManager.default.fileExists(atPath: destination.path) else {
                 throw WatchthroughFailure(.operation, "Refusing to overwrite existing strip at \(destination.path).")
             }
@@ -129,14 +144,19 @@ public enum StripRenderer {
         let stripWidth = actualCellWidth * grid.columns
         let frameURLs = cells.map { resolve(path: $0.framePath, relativeTo: framesBaseURL) }
         let geometries = try frameURLs.map { try imageGeometry(at: $0) }
-        let imageHeights = geometries.map { geometry in
-            max(1, Int((Double(actualCellWidth) * Double(geometry.height) / Double(geometry.width)).rounded()))
+        let imageSizes = geometries.map { geometry in
+            fittedImageSize(width: geometry.width, height: geometry.height, cellWidth: actualCellWidth)
         }
-        let imageAreaHeight = imageHeights.max() ?? 1
+        let imageAreaHeight = imageSizes.map(\.height).max() ?? 1
         let captionLineHeight = 18
         let captionHeight = 12 + 17 + 5 + options.maximumCaptionLines * captionLineHeight + 12
         let cellHeight = imageAreaHeight + captionHeight
         let stripHeight = cellHeight * grid.rows
+
+        guard stripWidth > 0, stripHeight > 0,
+              stripHeight <= StripRenderOptions.hardMaximumCanvasPixels / stripWidth else {
+            throw WatchthroughFailure(.operation, "Contact sheet exceeds the bounded canvas size; request fewer cells.")
+        }
 
         guard let context = CGContext(
             data: nil,
@@ -160,7 +180,9 @@ public enum StripRenderer {
             let rowFromTop = index / grid.columns
             let x = column * actualCellWidth
             let rowY = (grid.rows - rowFromTop - 1) * cellHeight
-            let frameHeight = imageHeights[index]
+            let frameHeight = imageSizes[index].height
+            let frameWidth = imageSizes[index].width
+            let frameX = x + (actualCellWidth - frameWidth) / 2
             let frameY = rowY + captionHeight + (imageAreaHeight - frameHeight) / 2
 
             context.setFillColor(CGColor(gray: 0.055, alpha: 1))
@@ -170,11 +192,11 @@ public enum StripRenderer {
                 width: actualCellWidth,
                 height: imageAreaHeight
             ))
-            let thumbnailSize = max(actualCellWidth, frameHeight) * 2
+            let thumbnailSize = max(frameWidth, frameHeight)
             let image = try loadImage(at: frameURLs[index], maximumPixelSize: thumbnailSize)
             context.draw(
                 image,
-                in: CGRect(x: x, y: frameY, width: actualCellWidth, height: frameHeight)
+                in: CGRect(x: frameX, y: frameY, width: frameWidth, height: frameHeight)
             )
 
             context.setFillColor(CGColor(red: 0.976, green: 0.973, blue: 0.957, alpha: 1))
@@ -205,16 +227,26 @@ public enum StripRenderer {
         guard let image = context.makeImage(),
               let destinationWriter = CGImageDestinationCreateWithURL(
                 destination as CFURL,
-                UTType.png.identifier as CFString,
+                (options.format == .jpeg ? UTType.jpeg : UTType.png).identifier as CFString,
                 1,
                 nil
               ) else {
-            throw WatchthroughFailure(.operation, "Could not create PNG output at \(destination.path).")
+            throw WatchthroughFailure(.operation, "Could not create contact sheet at \(destination.path).")
         }
-        CGImageDestinationAddImage(destinationWriter, image, nil)
+        let properties: [CFString: Any] = options.format == .jpeg
+            ? [kCGImageDestinationLossyCompressionQuality: options.jpegQuality]
+            : [:]
+        CGImageDestinationAddImage(destinationWriter, image, properties as CFDictionary)
         guard CGImageDestinationFinalize(destinationWriter) else {
-            throw WatchthroughFailure(.operation, "Could not finish PNG output at \(destination.path).")
+            throw WatchthroughFailure(.operation, "Could not finish contact sheet at \(destination.path).")
         }
+    }
+
+    static func fittedImageSize(width: Int, height: Int, cellWidth: Int) -> (width: Int, height: Int) {
+        let scale = min(Double(cellWidth) / Double(max(1, width)),
+                        Double(StripRenderOptions.hardMaximumImageHeight) / Double(max(1, height)))
+        return (max(1, Int((Double(width) * scale).rounded())),
+                max(1, Int((Double(height) * scale).rounded())))
     }
 
     private static func resolve(path: String, relativeTo base: URL) -> URL {
@@ -338,8 +370,8 @@ public enum PacketMarkdown {
             "- Source: `\(inlineCode(packet.sourcePath))`",
             "- Range: \(clock(packet.rangeStartSeconds)) to \(clock(packet.rangeEndSeconds))",
             "- Sampling: `\(inlineCode(packet.sampling))`",
-            "- Timing: `\(packet.timingPrecision.rawValue)`",
-            "- Largest uncovered gap: \(String(format: "%.2f", packet.largestGapSeconds)) seconds",
+            "- Transcript timing: `\(packet.timingPrecision.rawValue)`",
+            "- Largest sampled-frame gap: \(String(format: "%.2f", packet.largestGapSeconds)) seconds",
             "",
         ]
 
@@ -357,7 +389,15 @@ public enum PacketMarkdown {
         for cell in packet.cells {
             lines.append("### \(cell.index + 1). \(escapedMarkdown(cell.timestamp))")
             lines.append("")
-            lines.append("[Open JPEG](<\(markdownDestination(cell.framePath))>) · frame `\(cell.ordinal)` · interval \(clock(cell.intervalStartSeconds)) to \(clock(cell.intervalEndSeconds))")
+            let identity: String
+            if let ordinal = cell.ordinal {
+                identity = "global decoded frame `\(ordinal)`"
+            } else if let local = cell.localOrdinal {
+                identity = "regional decoded frame `\(local)` (not a global ordinal)"
+            } else {
+                identity = "observed PTS; global ordinal not indexed"
+            }
+            lines.append("[Open JPEG](<\(markdownDestination(cell.framePath))>) · \(identity) · interval \(clock(cell.intervalStartSeconds)) to \(clock(cell.intervalEndSeconds))")
             lines.append("")
             let caption = cell.caption.trimmingCharacters(in: .whitespacesAndNewlines)
             if caption.isEmpty {

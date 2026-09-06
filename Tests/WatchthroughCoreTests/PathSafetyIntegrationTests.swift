@@ -262,6 +262,7 @@ final class PathSafetyIntegrationTests: XCTestCase {
             "--transcriber", "none",
         ])
         let personalNote = analysis.appendingPathComponent("visual/overview/personal-note.md")
+        try FileManager.default.createDirectory(at: personalNote.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data("keep this".utf8).write(to: personalNote)
 
         XCTAssertThrowsError(try WatchthroughApplication().run(arguments: [
@@ -287,26 +288,23 @@ final class PathSafetyIntegrationTests: XCTestCase {
             "--transcriber", "none",
         ])
 
-        let packetURL = analysis.appendingPathComponent("visual/overview/packet.json")
+        _ = try WatchthroughApplication().run(arguments: ["inspect", analysis.path, "overview"])
+        let before = try XCTUnwrap(ManifestStore.read(from: analysis.appendingPathComponent("manifest.json")))
+        let packetURL = analysis.appendingPathComponent(before.visual.overviewPacketPath)
         let packet = try StableJSON.decode(InspectionPacket.self, from: packetURL)
-        let missing = analysis
-            .appendingPathComponent("visual/overview", isDirectory: true)
-            .appendingPathComponent(try XCTUnwrap(packet.cells.first).framePath)
-        try FileManager.default.moveItem(
-            at: missing,
-            to: temporaryDirectory.appendingPathComponent("held-frame.jpg")
-        )
-
-        XCTAssertEqual(
-            try WatchthroughApplication().run(arguments: [
-                "prepare", source.path,
-                "--out", analysis.path,
-                "--transcriber", "none",
-                "--refresh",
-            ]),
-            .success
-        )
-        XCTAssertTrue(FileManager.default.fileExists(atPath: missing.path))
+        let missing = packetURL.deletingLastPathComponent().appendingPathComponent(try XCTUnwrap(packet.cells.first).framePath)
+        try FileManager.default.moveItem(at: missing, to: temporaryDirectory.appendingPathComponent("held-frame.jpg"))
+        XCTAssertEqual(try WatchthroughApplication().run(arguments: [
+            "prepare", source.path, "--out", analysis.path, "--transcriber", "none", "--refresh",
+        ]), .success)
+        let refreshed = try XCTUnwrap(ManifestStore.read(from: analysis.appendingPathComponent("manifest.json")))
+        XCTAssertTrue(refreshed.visual.overviewPacketPath.isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: packetURL.path), "old evidence is retained")
+        _ = try WatchthroughApplication().run(arguments: ["inspect", analysis.path, "overview"])
+        let after = try XCTUnwrap(ManifestStore.read(from: analysis.appendingPathComponent("manifest.json")))
+        XCTAssertNotEqual(after.visual.overviewPacketPath, before.visual.overviewPacketPath)
+        let repaired = try StableJSON.decode(InspectionPacket.self, from: analysis.appendingPathComponent(after.visual.overviewPacketPath))
+        XCTAssertTrue(repaired.cells.allSatisfy { FileManager.default.fileExists(atPath: analysis.appendingPathComponent(after.visual.overviewPacketPath).deletingLastPathComponent().appendingPathComponent($0.framePath).path) })
     }
 
     func testFirstConcurrentInspectionsCanShareDirectoryCreation() throws {
@@ -357,7 +355,7 @@ final class PathSafetyIntegrationTests: XCTestCase {
         }
     }
 
-    func testInspectFallsBackToContentIdentityAfterSourceTimestampChanges() throws {
+    func testSourceTimestampChangeRequiresExplicitVerification() throws {
         let source = temporaryDirectory.appendingPathComponent("source.mkv")
         try makeVideo(at: source)
         let analysis = temporaryDirectory.appendingPathComponent("analysis", isDirectory: true)
@@ -372,12 +370,12 @@ final class PathSafetyIntegrationTests: XCTestCase {
             ofItemAtPath: source.path
         )
 
-        XCTAssertEqual(
-            try WatchthroughApplication().run(arguments: [
-                "inspect", analysis.path, "overview",
-            ]),
-            .success
-        )
+        XCTAssertThrowsError(try WatchthroughApplication().run(arguments: ["inspect", analysis.path, "overview"]))
+        XCTAssertEqual(WatchthroughApplication().status(StatusOptions(analysis: analysis, verify: true)).exit, .success)
+        XCTAssertEqual(try WatchthroughApplication().run(arguments: [
+            "prepare", source.path, "--out", analysis.path, "--transcriber", "none", "--refresh",
+        ]), .success)
+        XCTAssertEqual(try WatchthroughApplication().run(arguments: ["inspect", analysis.path, "overview"]), .success)
     }
 
     func testDistinctExactSamplingIntervalsNeverShareAnInspectionIdentity() throws {

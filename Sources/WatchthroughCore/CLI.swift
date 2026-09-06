@@ -5,6 +5,8 @@ public struct PrepareOptions: Equatable, Sendable {
     public var output: URL?
     public var transcriber: String
     public var refresh: Bool
+    public var deferTranscript: Bool = false
+    public var speakers: Bool = false
 }
 
 public struct InspectOptions: Equatable, Sendable {
@@ -13,16 +15,36 @@ public struct InspectOptions: Equatable, Sendable {
     public var selectorText: String
     public var every: SamplingInterval?
     public var cells: Int
+    public var width: Int = 1920
+    public var samples: Int = 12
+    public var sheetFormat: StripImageFormat = .jpeg
 }
 
 public struct StatusOptions: Equatable, Sendable {
     public var analysis: URL?
+    public var verify: Bool = false
+}
+
+public struct RetainOptions: Equatable, Sendable {
+    public var analysis: URL
+    public var note: URL
+    public var library: URL?
+    public var includes: [String]
+    public var dossiers: [URL]
+}
+
+public struct CleanupOptions: Equatable, Sendable {
+    public var analysis: URL
+    public var library: URL?
+    public var apply: Bool
 }
 
 public enum CLICommand: Equatable, Sendable {
     case prepare(PrepareOptions)
     case inspect(InspectOptions)
     case status(StatusOptions)
+    case retain(RetainOptions)
+    case cleanup(CleanupOptions)
     case help
     case version
 }
@@ -38,12 +60,17 @@ public enum CLIParser {
 
     Usage:
       watchthrough [--json] prepare VIDEO [--out ANALYSIS]
-        [--transcriber auto|none|sidecar|macparakeet|scribe|command:NAME] [--refresh]
+        [--transcriber auto|none|sidecar|macparakeet|scribe|command:NAME]
+        [--defer-transcript] [--speakers] [--refresh]
       watchthrough [--json] inspect ANALYSIS SELECTOR [--every DURATION|Nf] [--cells N]
-      watchthrough [--json] status [ANALYSIS]
+        [--width 320...8192] [--samples 2...90] [--sheet-format jpeg|png]
+      watchthrough [--json] status [ANALYSIS] [--verify]
+      watchthrough [--json] retain ANALYSIS --note FILE [--library DIR]
+        [--include RELATIVE] [--dossier FILE]
+      watchthrough [--json] cleanup ANALYSIS [--library DIR] [--apply]
 
     Selectors:
-      overview | events | event:E0042 | 12:30.250 | 12:30..12:45 | frame:18720
+      transcript | overview | events | event:E0042 | 12:30.250 | 12:30..12:45 | frame:18720
 
     The core accepts local video files only. For YouTube, acquire a local copy
     through references/youtube.md first.
@@ -58,7 +85,7 @@ public enum CLIParser {
         }
         arguments.removeFirst()
 
-        if ["prepare", "inspect", "status"].contains(first),
+        if ["prepare", "inspect", "status", "retain", "cleanup"].contains(first),
            arguments.count == 1,
            (arguments[0] == "--help" || arguments[0] == "-h") {
             return CLIInvocation(json: json, command: .help)
@@ -79,6 +106,10 @@ public enum CLIParser {
             return CLIInvocation(json: json, command: .prepare(try parsePrepare(arguments)))
         case "inspect":
             return CLIInvocation(json: json, command: .inspect(try parseInspect(arguments)))
+        case "retain":
+            return CLIInvocation(json: json, command: .retain(try parseRetain(arguments)))
+        case "cleanup":
+            return CLIInvocation(json: json, command: .cleanup(try parseCleanup(arguments)))
         case "status":
             return CLIInvocation(json: json, command: .status(try parseStatus(arguments)))
         default:
@@ -89,6 +120,8 @@ public enum CLIParser {
     private static func parsePrepare(_ raw: [String]) throws -> PrepareOptions {
         var arguments = raw
         let refresh = removeFlag("--refresh", from: &arguments)
+        let deferred = removeFlag("--defer-transcript", from: &arguments)
+        let speakers = removeFlag("--speakers", from: &arguments)
         let output = try removeValue("--out", from: &arguments)
         let transcriber = try removeValue("--transcriber", from: &arguments) ?? "auto"
 
@@ -115,7 +148,9 @@ public enum CLIParser {
             source: fileURL(input),
             output: output.map(fileURL),
             transcriber: transcriber,
-            refresh: refresh
+            refresh: refresh,
+            deferTranscript: deferred,
+            speakers: speakers
         )
     }
 
@@ -123,29 +158,74 @@ public enum CLIParser {
         var arguments = raw
         let everyText = try removeValue("--every", from: &arguments)
         let cellsText = try removeValue("--cells", from: &arguments)
+        let widthText = try removeValue("--width", from: &arguments)
+        let samples = try boundedInteger(removeValue("--samples", from: &arguments), flag: "--samples", bounds: 2...90, fallback: 12)
+        let formatText = try removeValue("--sheet-format", from: &arguments) ?? "jpeg"
+        guard let format = StripImageFormat(rawValue: formatText) else { throw usage("--sheet-format must be jpeg or png") }
         guard arguments.count == 2 else {
             throw usage("inspect requires ANALYSIS and SELECTOR")
         }
         let cells = try cellsText.map(parseCells) ?? 15
         let selectorText = arguments[1]
+        let width = try boundedInteger(widthText, flag: "--width", bounds: 320...8192, fallback: selectorText == "overview" ? 720 : 1920)
         return InspectOptions(
             analysis: fileURL(arguments[0]),
             selector: try parseSelector(selectorText),
             selectorText: selectorText,
             every: try everyText.map(parseSampling),
-            cells: cells
+            cells: cells,
+            width: width,
+            samples: samples,
+            sheetFormat: format
         )
     }
 
-    private static func parseStatus(_ arguments: [String]) throws -> StatusOptions {
-        guard arguments.count <= 1 else {
-            throw usage("status accepts at most one ANALYSIS path")
+    private static func parseStatus(_ raw: [String]) throws -> StatusOptions {
+        var arguments = raw
+        let verify = removeFlag("--verify", from: &arguments)
+        guard arguments.count <= 1, !arguments.contains(where: { $0.hasPrefix("--") }), !verify || !arguments.isEmpty else {
+            throw usage("status accepts one ANALYSIS path; --verify requires that path")
         }
-        return StatusOptions(analysis: arguments.first.map(fileURL))
+        return StatusOptions(analysis: arguments.first.map(fileURL), verify: verify)
+    }
+
+    private static func parseRetain(_ raw: [String]) throws -> RetainOptions {
+        var arguments = raw
+        let note = try removeValue("--note", from: &arguments)
+        let library = try removeValue("--library", from: &arguments)
+        let includes = try removeRepeatedValues("--include", from: &arguments)
+        let dossiers = try removeRepeatedValues("--dossier", from: &arguments)
+        guard arguments.count == 1, let note else { throw usage("retain requires ANALYSIS and --note FILE") }
+        return RetainOptions(analysis: fileURL(arguments[0]), note: fileURL(note), library: library.map(fileURL), includes: includes, dossiers: dossiers.map(fileURL))
+    }
+
+    private static func parseCleanup(_ raw: [String]) throws -> CleanupOptions {
+        var arguments = raw
+        let apply = removeFlag("--apply", from: &arguments)
+        let library = try removeValue("--library", from: &arguments)
+        guard arguments.count == 1 else { throw usage("cleanup requires ANALYSIS") }
+        return CleanupOptions(analysis: fileURL(arguments[0]), library: library.map(fileURL), apply: apply)
+    }
+
+    private static func boundedInteger(_ text: String?, flag: String, bounds: ClosedRange<Int>, fallback: Int) throws -> Int {
+        guard let text else { return fallback }
+        guard let value = Int(text), bounds.contains(value) else { throw usage("\(flag) must be between \(bounds.lowerBound) and \(bounds.upperBound)") }
+        return value
+    }
+
+    private static func removeRepeatedValues(_ flag: String, from arguments: inout [String]) throws -> [String] {
+        var values: [String] = []
+        while let index = arguments.firstIndex(of: flag) {
+            guard index + 1 < arguments.count, !arguments[index + 1].hasPrefix("--") else { throw usage("\(flag) requires a value") }
+            values.append(arguments[index + 1])
+            arguments.removeSubrange(index...index + 1)
+        }
+        return values
     }
 
     public static func parseSelector(_ value: String) throws -> InspectionSelector {
         switch value {
+        case "transcript": return .transcript
         case "overview": return .overview
         case "events": return .events
         default: break
