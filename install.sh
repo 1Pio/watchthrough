@@ -9,6 +9,7 @@ fail() {
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 BINARY="$SCRIPT_DIR/dist/macos-arm64/watchthrough"
 CHECKSUM="$SCRIPT_DIR/dist/macos-arm64/watchthrough.sha256"
+SKILL_SOURCE="$SCRIPT_DIR/skill"
 
 [ "$(uname -s)" = "Darwin" ] || fail "version 1 supports macOS only"
 [ "$(uname -m)" = "arm64" ] || fail "version 1 requires Apple Silicon"
@@ -20,6 +21,7 @@ esac
 
 [ -x "$BINARY" ] || fail "committed executable is missing: $BINARY"
 [ -f "$CHECKSUM" ] || fail "committed checksum is missing: $CHECKSUM"
+[ -f "$SKILL_SOURCE/SKILL.md" ] || fail "agent skill is missing: $SKILL_SOURCE/SKILL.md"
 
 (
     cd "$SCRIPT_DIR/dist/macos-arm64"
@@ -43,10 +45,11 @@ preflight_link() {
     source_path=$1
     target_path=$2
     label=$3
+    legacy_source=${4:-}
 
     if [ -L "$target_path" ]; then
         current=$(/usr/bin/readlink "$target_path")
-        [ "$current" = "$source_path" ] ||
+        [ "$current" = "$source_path" ] || [ "$current" = "$legacy_source" ] ||
             fail "$label link already points elsewhere: $target_path"
         return
     fi
@@ -62,12 +65,29 @@ link_once() {
     /bin/ln -s "$source_path" "$target_path"
 }
 
+link_skill() {
+    if [ -L "$SKILL_LINK" ]; then
+        current=$(/usr/bin/readlink "$SKILL_LINK")
+        [ "$current" = "$SKILL_SOURCE" ] && return
+        [ "$current" = "$SCRIPT_DIR" ] ||
+            fail "skill link already points elsewhere: $SKILL_LINK"
+
+        temporary_link="$SKILL_DIR/.watchthrough-link-$$"
+        /bin/ln -s "$SKILL_SOURCE" "$temporary_link"
+        # Both paths share a directory. -h replaces the owned symlink itself
+        # instead of following its directory target.
+        /bin/mv -fh "$temporary_link" "$SKILL_LINK"
+        return
+    fi
+    /bin/ln -s "$SKILL_SOURCE" "$SKILL_LINK"
+}
+
 preflight_link "$BINARY" "$BIN_LINK" "command"
-preflight_link "$SCRIPT_DIR" "$SKILL_LINK" "skill"
+preflight_link "$SKILL_SOURCE" "$SKILL_LINK" "skill" "$SCRIPT_DIR"
 
 /bin/mkdir -p "$BIN_DIR" "$SKILL_DIR"
 link_once "$BINARY" "$BIN_LINK"
-link_once "$SCRIPT_DIR" "$SKILL_LINK"
+link_skill
 
 "$BIN_LINK" status
 

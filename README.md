@@ -62,7 +62,7 @@ Completed bundles are verified and reused without contacting YouTube or starting
 the downloader. An explicit update flag still performs the requested tool update.
 The returned context and description files contain useful creator provenance;
 signed stream URLs, request inventories, cookies, and downloaded captions are not
-part of the normal bundle. See [references/youtube.md](references/youtube.md) for
+part of the normal bundle. See [references/youtube.md](skill/references/youtube.md) for
 source research, dependency overrides, and the caption fallback policy.
 
 ## Ask for evidence as needed
@@ -116,7 +116,7 @@ upload and cost. Its key can come from the environment, macOS Keychain, or
 `~/.config/watchthrough/.env`; it is not put in subprocess arguments or artifacts.
 
 Online acquisition and bounded description/comment research are documented in
-[references/youtube.md](references/youtube.md). Local ASR is the normal route.
+[references/youtube.md](skill/references/youtube.md). Local ASR is the normal route.
 Downloaded captions stay language-qualified and are a vetted last fallback, not
 automatically promoted to authoritative transcription.
 
@@ -130,7 +130,7 @@ invalidate affected packets. Packet inventories detect corrupt evidence.
 
 Successful stages survive later failures. A yielded command still has one owner:
 poll its existing session instead of starting another preparation. See
-[references/recovery.md](references/recovery.md) for stale and interrupted work.
+[references/recovery.md](skill/references/recovery.md) for stale and interrupted work.
 
 ## Retain useful knowledge, then clean up
 
@@ -162,7 +162,7 @@ Cleanup previews first, then moves only the owned analysis directory to native
 system Trash after verifying a matching snapshot. It preserves the source video
 and library. Active writers, changed evidence, unsafe paths, corrupt archives, and
 unknown user files prevent cleanup. See the note template and exact workflow in
-[references/retention.md](references/retention.md).
+[references/retention.md](skill/references/retention.md).
 
 ## Development and evidence
 
@@ -185,7 +185,7 @@ The implementation uses installed FFmpeg/FFprobe and native CoreGraphics,
 ImageIO, and CoreText. No third-party Swift package is used. Local ASR adapters
 reuse existing speech runtimes. Optical flow and 3D reconstruction remain explicit
 specialist follow-up work on bounded evidence, documented in
-[references/motion.md](references/motion.md).
+[references/motion.md](skill/references/motion.md).
 
 Release evidence is kept in one short note per version:
 [v0.2.0](docs/v0.2.0.md) compares the earlier implementation;
