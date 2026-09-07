@@ -187,13 +187,11 @@ reuse existing speech runtimes. Optical flow and 3D reconstruction remain explic
 specialist follow-up work on bounded evidence, documented in
 [references/motion.md](references/motion.md).
 
-Read [docs/redesign.md](docs/redesign.md) for the baseline findings and acceptance
-contract, and [docs/review.md](docs/review.md) for measured results, iterations,
-reuse decisions, and limitations. The [0.3 acquisition and evidence report](docs/acquisition-and-context.md)
-records the chosen improvements and live short-video acceptance; its
-[measurements](docs/acquisition-verification.json) identify the exact packaged binary.
-Synthetic fixtures and deterministic tests cover
-the tested domain; sparse samples never establish exhaustive visual coverage.
+Release evidence is kept in one short note per version:
+[v0.2.0](docs/v0.2.0.md) compares the earlier implementation;
+[v0.3.0](docs/v0.3.0.md) records native acquisition and the short-video workflow.
+Synthetic fixtures and deterministic tests cover the tested domain; sparse samples
+never establish exhaustive visual coverage.
 
 Downloaded media, transcripts, provider responses, comments, and personal paths
 must not enter this public repository. MIT licensed; see [LICENSE](LICENSE).
