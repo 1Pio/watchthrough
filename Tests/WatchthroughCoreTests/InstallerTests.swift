@@ -32,6 +32,15 @@ final class InstallerTests: XCTestCase {
             ),
             repository.appendingPathComponent("dist/macos-arm64/watchthrough").path
         )
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(
+                atPath: cleanHome.appendingPathComponent(".agents/skills/watchthrough").path
+            ),
+            repository.appendingPathComponent("skill").path
+        )
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: cleanHome.appendingPathComponent(".agents/skills/watchthrough/SKILL.md").path
+        ))
 
         let collisionHome = temporaryDirectory.appendingPathComponent("collision-home", isDirectory: true)
         let skillCollision = collisionHome.appendingPathComponent(".agents/skills/watchthrough", isDirectory: true)
@@ -41,6 +50,56 @@ final class InstallerTests: XCTestCase {
         let command = collisionHome.appendingPathComponent(".local/bin/watchthrough")
         XCTAssertFalse(FileManager.default.fileExists(atPath: command.path))
         XCTAssertThrowsError(try FileManager.default.destinationOfSymbolicLink(atPath: command.path))
+    }
+
+    func testSameCheckoutLegacySkillLinkMigratesIdempotently() throws {
+        let home = temporaryDirectory.appendingPathComponent("legacy-home", isDirectory: true)
+        let command = home.appendingPathComponent(".local/bin/watchthrough")
+        let skill = home.appendingPathComponent(".agents/skills/watchthrough")
+        let binary = repository.appendingPathComponent("dist/macos-arm64/watchthrough")
+        try FileManager.default.createDirectory(at: command.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: skill.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: command, withDestinationURL: binary)
+        try FileManager.default.createSymbolicLink(at: skill, withDestinationURL: repository)
+
+        XCTAssertEqual(try runInstaller(home: home), 0)
+        XCTAssertEqual(try runInstaller(home: home), 0)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: command.path), binary.path)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: skill.path),
+            repository.appendingPathComponent("skill").path)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: skill.deletingLastPathComponent().path),
+            ["watchthrough"], "successful migration leaves no temporary link")
+    }
+
+    func testUnrelatedSkillLinkRefusesBeforeCreatingCommand() throws {
+        let home = temporaryDirectory.appendingPathComponent("foreign-skill-home", isDirectory: true)
+        let skill = home.appendingPathComponent(".agents/skills/watchthrough")
+        let unrelated = temporaryDirectory.appendingPathComponent("other-checkout", isDirectory: true)
+        try FileManager.default.createDirectory(at: unrelated, withIntermediateDirectories: false)
+        try FileManager.default.createDirectory(at: skill.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: skill, withDestinationURL: unrelated)
+
+        XCTAssertNotEqual(try runInstaller(home: home), 0)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: skill.path), unrelated.path)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent(".local/bin").path),
+            "all collisions must be checked before creating installation directories or links")
+    }
+
+    func testCommandCollisionCannotPartiallyMigrateLegacySkill() throws {
+        let home = temporaryDirectory.appendingPathComponent("foreign-command-home", isDirectory: true)
+        let command = home.appendingPathComponent(".local/bin/watchthrough")
+        let skill = home.appendingPathComponent(".agents/skills/watchthrough")
+        let unrelated = temporaryDirectory.appendingPathComponent("user-command")
+        try Data("preserve user command".utf8).write(to: unrelated)
+        try FileManager.default.createDirectory(at: command.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: skill.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: command, withDestinationURL: unrelated)
+        try FileManager.default.createSymbolicLink(at: skill, withDestinationURL: repository)
+
+        XCTAssertNotEqual(try runInstaller(home: home), 0)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: command.path), unrelated.path)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: skill.path), repository.path)
+        XCTAssertEqual(try Data(contentsOf: unrelated), Data("preserve user command".utf8))
     }
 
     private func runInstaller(home: URL) throws -> Int32 {

@@ -4,6 +4,15 @@ import Foundation
 /// replaces directory trees. These checks intentionally reject symlinked write
 /// roots instead of trying to infer whether a link is benign.
 enum PathSafety {
+    static func ensureStageDirectory(_ name: String, under analysis: URL) throws -> URL {
+        guard ["visual", "transcript"].contains(name) else { throw WatchthroughFailure(.operation, "invalid stage directory") }
+        let directory = analysis.appendingPathComponent(name, isDirectory: true)
+        if let type = entryType(at: directory) {
+            guard type == .typeDirectory, !isSymbolicLink(directory) else { throw WatchthroughFailure(.operation, "unsafe stage directory: \(name)") }
+        } else { try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false) }
+        return directory
+    }
+
     static func preparationOutput(_ requested: URL, source: URL) throws -> URL {
         let requested = requested.standardizedFileURL
         if isSymbolicLink(requested) {
@@ -141,18 +150,19 @@ enum PathSafety {
         at analysis: URL,
         manifest: PreparationManifest
     ) throws {
-        guard manifest.visual.frameIndexPath == "visual/frame-index.tsv",
-              manifest.visual.overviewPacketPath == "visual/overview/packet.json",
-              manifest.visual.eventsPath == "visual/events.json" else {
+        guard ["", "visual/frame-index.tsv"].contains(manifest.visual.frameIndexPath),
+              manifest.visual.overviewPacketPath.isEmpty || manifest.visual.overviewPacketPath == "visual/overview/packet.json"
+                || matches(manifest.visual.overviewPacketPath, #"^inspections/[a-z0-9][a-z0-9-]{0,41}-[0-9a-f]{8}/packet\.json$"#),
+              ["", "visual/events.json"].contains(manifest.visual.eventsPath) else {
             throw unrecognizedRefreshEntry("manifest contains an incompatible artifact layout")
         }
 
         let rawPath = manifest.transcript.rawPath
         if manifest.transcript.available {
-            guard manifest.transcript.path == "transcript/transcript.json",
-                  manifest.transcript.textPath == nil
-                    || manifest.transcript.textPath == "transcript/transcript.txt",
-                  rawPath == nil || matches(rawPath!, #"^transcript/raw-provider-response\.[a-z0-9]+$"#) else {
+            let prefix = #"^transcript/(run-[0-9a-f-]{36}/)?"#
+            guard manifest.transcript.path.map({ matches($0, prefix + #"transcript\.json$"#) }) == true,
+                  manifest.transcript.textPath == nil || manifest.transcript.textPath.map({ matches($0, prefix + #"transcript\.txt$"#) }) == true,
+                  rawPath == nil || matches(rawPath!, prefix + #"raw-provider-response\.[a-z0-9]+$"#) else {
                 throw unrecognizedRefreshEntry("manifest contains an incompatible transcript layout")
             }
         } else if manifest.transcript.path != nil
@@ -216,14 +226,14 @@ enum PathSafety {
             == rhs.standardizedFileURL.resolvingSymlinksInPath()
     }
 
-    private static func entryType(at url: URL) -> FileAttributeType? {
+    static func entryType(at url: URL) -> FileAttributeType? {
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else {
             return nil
         }
         return attributes[.type] as? FileAttributeType
     }
 
-    private static func isSymbolicLink(_ url: URL) -> Bool {
+    static func isSymbolicLink(_ url: URL) -> Bool {
         entryType(at: url) == .typeSymbolicLink
     }
 
@@ -292,21 +302,25 @@ enum PathSafety {
             return type == .typeRegular
         }
         if parts.count == 3, parts[0] == "visual", parts[1] == "overview" {
-            return type == .typeRegular && matches(parts[2], #"^strip-[0-9]{2,}\.png$"#)
+            return type == .typeRegular && matches(parts[2], #"^strip-[0-9]{2,}\.(png|jpg)$"#)
         }
         if parts.count == 4,
            parts[0] == "visual", parts[1] == "overview", parts[2] == "frames" {
-            return type == .typeRegular && matches(parts[3], #"^frame-o[0-9]{8,}\.jpg$"#)
+            return type == .typeRegular && matches(parts[3], #"^frame-[a-z0-9-]+\.jpg$"#)
         }
-        if parts == ["transcript"] {
-            return transcriptAvailable && type == .typeDirectory
+        if parts == ["transcript"] { return type == .typeDirectory }
+        if parts.count >= 2, parts[0] == "transcript",
+           matches(parts[1], #"^run-[0-9a-f-]{36}$"#) || matches(parts[1], #"^\.watchthrough-run-[0-9a-f-]{36}\.tmp-[0-9a-f-]{36}$"#) {
+            if parts.count == 2 { return type == .typeDirectory }
+            return parts.count == 3 && type == .typeRegular &&
+                (parts[2] == "transcript.json" || parts[2] == "transcript.txt" || parts[2] == ".adapter-output.json" || parts[2] == ".scribe-audio.flac" || matches(parts[2], #"^raw-provider-response\.[a-z0-9]+$"#))
         }
         if parts == ["transcript", "transcript.json"]
             || parts == ["transcript", "transcript.txt"] {
-            return transcriptAvailable && type == .typeRegular
+            return type == .typeRegular
         }
         if parts.count == 2, parts[0] == "transcript" {
-            return transcriptAvailable && type == .typeRegular && path == rawTranscriptPath
+            return type == .typeRegular && (path == rawTranscriptPath || matches(parts[1], #"^raw-provider-response\.[a-z0-9]+$"#))
         }
         if parts == ["inspections"] { return type == .typeDirectory }
         if parts.count == 2, parts[0] == "inspections" {
@@ -328,19 +342,20 @@ enum PathSafety {
             guard type == .typeRegular, isInspectionIdentity(identity) else { return false }
             return name == "packet.json"
                 || name == "packet.md"
-                || matches(name, #"^strip-[0-9]{2,}\.png$"#)
+                || matches(name, #"^strip-[0-9]{2,}\.(png|jpg)$"#)
         }
         if parts.count == 4,
            parts[0] == "inspections", parts[2] == "frames" {
             return type == .typeRegular
                 && isInspectionIdentity(parts[1])
-                && matches(parts[3], #"^frame-o[0-9]{8,}\.jpg$"#)
+                && matches(parts[3], #"^frame-[a-z0-9-]+\.jpg$"#)
         }
         return false
     }
 
     private static func isInspectionIdentity(_ value: String) -> Bool {
         matches(value, #"^[a-z0-9][a-z0-9-]{0,41}-[0-9a-f]{8}$"#)
+            || matches(value, #"^\.watchthrough-[a-z0-9][a-z0-9-]{0,41}-[0-9a-f]{8}\.tmp-[0-9a-f-]{36}$"#)
     }
 
     private static func matches(_ value: String, _ pattern: String) -> Bool {

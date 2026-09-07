@@ -65,6 +65,47 @@ final class ArtifactTests: XCTestCase {
         XCTAssertEqual(config.visualSampleLimit, 7_200)
     }
 
+    func testPacketVersionTwoAnnouncesOptionalOrdinalAndRetainsVersionOneDecoding() throws {
+        XCTAssertEqual(WatchthroughVersion.packetSchema, "watchthrough.packet.v2")
+        XCTAssertTrue(WatchthroughVersion.supportedPacketSchemas.contains("watchthrough.packet.v1"))
+        let legacy = Data(#"{"index":0,"ordinal":12,"ptsSeconds":0.5,"intervalStartSeconds":0.4,"intervalEndSeconds":0.6,"timestamp":"00:00.500","caption":"","framePath":"frames/frame-o00000012.jpg"}"#.utf8)
+        let cell = try StableJSON.decode(PacketCell.self, from: legacy)
+        XCTAssertEqual(cell.ordinal, 12)
+        XCTAssertNil(cell.ordinalBasis)
+        XCTAssertNil(cell.localOrdinal)
+        XCTAssertNil(cell.captionPreview)
+    }
+
+    func testSpeechPreviewRejectsInvalidOrUnrelatedTimingButAllowsCoarseCues() throws {
+        let cell = PacketCell(index: 0, ordinal: nil, ptsSeconds: 10,
+            intervalStartSeconds: 9, intervalEndSeconds: 11, timestamp: "00:10.000",
+            caption: "complete interval", framePath: "frames/frame-1.jpg", ordinalBasis: "timestamp-only",
+            captionPreview: PacketCaptionPreview(text: "nearby", startSeconds: 9.8, endSeconds: 10.2, timingPrecision: .word))
+        let packet = InspectionPacket(selector: "10", sourcePath: "/fixture/video.mkv", rangeStartSeconds: 9,
+            rangeEndSeconds: 11, sampling: "single decoded timestamp receipt", cellsPerSheet: 15, largestGapSeconds: 0,
+            timingPrecision: .word, cells: [cell], sheets: [], contentFingerprint: "render", evidenceFingerprint: "source",
+            maximumFrameWidth: 1_920)
+        XCTAssertNoThrow(try InspectionPacketValidation.validateStructure(packet))
+        let invalid = [
+            PacketCaptionPreview(text: "missing bounds", timingPrecision: .word),
+            PacketCaptionPreview(text: "nonfinite", startSeconds: .infinity, endSeconds: .infinity, timingPrecision: .word),
+            PacketCaptionPreview(text: "reversed", startSeconds: 10.2, endSeconds: 9.8, timingPrecision: .word),
+            PacketCaptionPreview(text: "distant", startSeconds: 100, endSeconds: 101, timingPrecision: .word),
+            PacketCaptionPreview(text: "", startSeconds: 9.8, endSeconds: 10.2, timingPrecision: .word),
+            PacketCaptionPreview(text: "wrong precision", startSeconds: 9.8, endSeconds: 10.2, timingPrecision: .segment),
+        ]
+        for preview in invalid {
+            var changed = packet
+            changed.cells[0].captionPreview = preview
+            XCTAssertThrowsError(try InspectionPacketValidation.validateStructure(changed), preview.text)
+        }
+        var coarse = packet
+        coarse.timingPrecision = .segment
+        coarse.cells[0].captionPreview = PacketCaptionPreview(text: "whole coarse cue", startSeconds: 0,
+            endSeconds: 120, timingPrecision: .segment)
+        XCTAssertNoThrow(try InspectionPacketValidation.validateStructure(coarse))
+    }
+
     func testPreparationReuseRequiresEveryOverviewFrameReferencedByPacket() throws {
         let analysis = temporaryDirectory.appendingPathComponent("analysis", isDirectory: true)
         let overview = analysis

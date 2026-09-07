@@ -4,6 +4,55 @@ import XCTest
 @testable import WatchthroughCore
 
 final class ProcessRunnerTests: XCTestCase {
+    func testStreamingDiagnosticsRemainSeparateAndDoNotAccumulate() throws {
+        var received = 0
+        let output = try ProcessRunner.run(
+            "/bin/sh",
+            arguments: ["-c", "/usr/bin/head -c 262144 /dev/zero >&2; printf result"],
+            timeout: 5,
+            stderrConsumer: { received += $0.count }
+        ).requireSuccess()
+        XCTAssertEqual(received, 262_144)
+        XCTAssertTrue(output.stderrData.isEmpty)
+        XCTAssertEqual(output.stdout, "result")
+    }
+
+    func testStreamingOutputDoesNotAccumulateCapturedPayload() throws {
+        var received = 0
+        let output = try ProcessRunner.run(
+            "/usr/bin/head", arguments: ["-c", "262144", "/dev/zero"], timeout: 5,
+            stdoutConsumer: { received += $0.count }
+        ).requireSuccess()
+        XCTAssertEqual(received, 262_144)
+        XCTAssertTrue(output.stdoutData.isEmpty)
+    }
+
+    func testVisualScanRegistersStreamingChildForCancellation() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("watchthrough-stream-relay-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let ready = directory.appendingPathComponent("ready")
+        let executable = directory.appendingPathComponent("decoder")
+        try Data("#!/bin/sh\nprintf ready > '\(ready.path)'\n/usr/bin/head -c 12 /dev/zero\nwhile :; do sleep 1; done\n".utf8).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        let completed = expectation(description: "streaming decoder stopped")
+        DispatchQueue.global().async {
+            _ = try? VisualAnalyzer.scan(
+                source: directory.appendingPathComponent("unused-video"),
+                media: MediaInfo(durationSeconds: 2, width: 2, height: 2, hasAudio: false, frameCount: 4, firstPTS: 0, lastPTS: 1.5),
+                ffmpegPath: executable.path
+            )
+            completed.fulfill()
+        }
+        let deadline = Date().addingTimeInterval(2)
+        while !FileManager.default.fileExists(atPath: ready.path), Date() < deadline { usleep(10_000) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: ready.path))
+        let groups = ProcessSignalRelay.cancelActiveProcessGroups(signal: SIGKILL)
+        XCTAssertEqual(groups.count, 1)
+        wait(for: [completed], timeout: 2)
+        XCTAssertEqual(Darwin.kill(-groups[0], 0), -1)
+    }
+
     func testPreservesDescriptorsExplicitlyMarkedForChildInheritance() throws {
         let destination = FileManager.default.temporaryDirectory
             .appendingPathComponent("watchthrough-inherited-fd-\(UUID().uuidString)")

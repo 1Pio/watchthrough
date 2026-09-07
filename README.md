@@ -1,84 +1,125 @@
 # watchthrough
 
-watchthrough is a small local command and agent skill for understanding video as joined transcript and visual evidence.
+Let your agent read, see, and understand video.
 
-It prepares a local video into a reusable folder containing an honest transcript, sparse beginning-to-tail visual coverage, likely visual-change hints, and targeted captioned strips. An AI agent can scan broadly, inspect exact frames or dense ranges, delegate independent sections, and curate useful knowledge without putting a whole video into one context.
+Watchthrough pairs a local CLI with an agent skill. It turns local videos and
+YouTube links into a transcript, timestamped frames, and contact sheets the agent
+can inspect, then keeps the useful evidence with its source note.
 
-Captioned sheets use a compact grid of at most five columns so broad coverage remains readable without changing the bounded 15-cell default.
+After [installing](#install), the workflow is small:
 
-The CLI does deterministic media work. The bundled skill decides what matters, follows sources, and hands curated knowledge to Obsidian or another skill.
+1. **Read the video.** `watchthrough prepare video.mp4` returns an analysis directory and a transcript when a speech engine or sidecar is available.
+2. **Get your bearings.** `watchthrough inspect video.mp4.watchthrough overview` makes a 12-frame overview.
+3. **Follow the motion.** `watchthrough inspect video.mp4.watchthrough 03:18..03:19 --every 1f` reveals every decoded frame in that second.
+4. **Look closer.** `watchthrough inspect video.mp4.watchthrough 03:20 --width 1920` returns a detail frame up to 1920 pixels on its long edge.
 
-## Deliberately small
+Add `--json` to any command for structured results. Follow the returned artifact
+paths; the agent reads the transcript and opens the images before answering.
 
-- One executable.
-- Three subcommands: prepare, inspect, status.
-- Local video input only.
-- FFmpeg and FFprobe are the only required runtime tools.
-- No Python environment, Node runtime, database, daemon, GUI, MCP server, or bundled model.
-- No automatic upload or paid transcription fallback.
+![A section of a video as an agent sees it: timestamped frames with nearby speech](assets/agent-view.png)
 
-Version 1 targets Apple Silicon macOS 14 or newer.
+*Six frames from 03:18-03:22 of [WeatherNext 3](https://www.youtube.com/watch?v=_6jZlnRsXXQ&t=198s),
+Google DeepMind. Unaltered Watchthrough output, with separate frame and speech times.*
+
+`watchthrough inspect ANALYSIS 03:18..03:22 --every 800ms --cells 6 --width 1280 --sheet-format png`
+reproduces this view.
+
+## A quick look, then a closer one
+
+| What the agent asks for | Measured time |
+|---|---:|
+| Every frame in one second | **0.25 s** for 26 frames |
+| A previously opened inspection | **27 ms** |
+| A whole-video overview | **2 s** for 12 frames |
+| Acquire the YouTube video | **11 s**, including downloader setup |
+| Transcribe it locally | **15 s** |
+
+These examples use a 4:35 video. Watchthrough seeks to the requested region and
+reuses decoded frames when only the layout changes. Whole-video change scans and
+global frame indexing run when requested. [v0.3.0](docs/v0.3.0.md) has the measured
+workflow; [v0.2.0](docs/v0.2.0.md) compares the earlier implementation.
 
 ## Install
 
-Install FFmpeg, clone this repository, then run:
+You need **Apple Silicon, macOS 14+, and FFmpeg/FFprobe** on your `PATH`.
+Clone this repository, enter its directory, and run `./install.sh`.
 
-~~~bash
-./install.sh
-~~~
+The installer verifies the packaged executable, links `watchthrough` into
+`~/.local/bin`, and installs the [agent skill](skill/SKILL.md) in
+`~/.agents/skills/watchthrough`. Keep the checkout in place: both are links to it.
+Add `~/.local/bin` to your `PATH` if needed. No service or background process runs.
 
-The installer verifies the committed binary, links it into ~/.local/bin, links the skill into ~/.agents/skills/watchthrough, and runs watchthrough status. It does not use sudo, edit shell configuration, or download dependencies.
+Local speech uses an existing **MacParakeet** installation by default. You can
+also use transcript sidecars or a named command adapter. For an immediate visual
+question, `watchthrough prepare video.mp4 --defer-transcript` gets started without
+waiting for speech; `watchthrough inspect ANALYSIS transcript` adds it later.
+ElevenLabs Scribe is an explicit cloud option, never an automatic fallback.
 
-## Quick start
+Run `watchthrough status` when checking dependencies or diagnosing setup.
 
-~~~bash
-watchthrough status
-watchthrough prepare "/path/video.mp4"
-watchthrough inspect "/path/video.mp4.watchthrough" overview
-watchthrough inspect "/path/video.mp4.watchthrough" events
-watchthrough inspect "/path/video.mp4.watchthrough" 06:49..07:10 --every 500ms
-~~~
+## Start from YouTube
 
-Use global --json for the stable agent result contract:
+```sh
+watchthrough --json acquire "YOUTUBE_URL" --out ./source
+watchthrough --json prepare ./source/download/source.mkv
+```
 
-~~~bash
-watchthrough --json prepare "/path/video.mp4"
-~~~
+Acquisition keeps native frame rate and caps resolution at 1080p; `--height 720`
+or `--height 2160` changes the cap. It selects current formats and merges without
+transcoding. Repeat the same command to resume; completed sources reuse locally.
 
-`status ANALYSIS` reports `complete and reusable`, `preparing`, `incomplete`, `missing`, or `invalid`. These states let an agent recover the original destination after a long host session is yielded or lost without creating duplicate analyses or deleting staging evidence. Global status also reports optional detected yt-dlp and JavaScript-runtime versions; they never affect core readiness.
+YouTube needs **Deno 2.3+ or Node 22+**, plus current yt-dlp with its matching EJS
+component. If yt-dlp is missing or outdated, add `--update-downloader` to explicitly
+install a verified copy managed by Watchthrough. With existing Python 3.10+ this
+is about **3 MB**; otherwise it selects the standalone macOS package. Ordinary
+acquisition does not install code or use browser cookies.
 
-YouTube acquisition is intentionally documented in [references/youtube.md](references/youtube.md) instead of being coupled to the core command.
+[YouTube reference](skill/references/youtube.md): dependency overrides, source
+context, and carefully chosen caption fallbacks.
 
-## Transcription
+## Keep what you learned
 
---transcriber auto stays local:
+Write a source note, then retain it with the selected evidence:
 
-1. A source-adjacent SRT, VTT, or canonical JSON sidecar.
-2. MacParakeet when installed and capability-compatible.
-3. A configured local command adapter.
-4. Visual-only preparation with an explicit warning.
+```sh
+watchthrough retain ANALYSIS --note source-note.md --include PACKET_PATH
+watchthrough cleanup ANALYSIS
+watchthrough cleanup ANALYSIS --apply
+```
 
-ElevenLabs Scribe v2 is available only through explicit --transcriber scribe. Its key can come from the process environment, macOS Keychain, or ~/.config/watchthrough/.env. The tool never places it in process arguments or artifacts.
+`PACKET_PATH` can be the absolute path returned by `inspect`. Selecting a packet
+also keeps its frames and sheets. The library preserves the note, full available
+transcript, source provenance, and selected evidence with checksums. Cleanup
+previews first, then moves the verified analysis cache to system Trash; the source
+video and library remain available.
 
-Downloaded YouTube captions remain language-qualified and non-auto-discoverable. They are not the normal transcript route. Use sufficient local transcription first, use Scribe only with explicit authorization, and promote a vetted YouTube caption to a discoverable sidecar only as the strict last fallback described in [references/youtube.md](references/youtube.md).
+The default library lives at `~/Library/Application Support/watchthrough/library`;
+`--library DIRECTORY` selects another location. Use `watchthrough status ANALYSIS --verify` to check the source and every completed inspection packet.
 
-The bundled skill has a transcript ownership gate. For one or a few reasonably sized videos, the main agent reads every clean transcript in full before detailed visual or surrounding-context work. For too many or unusually long videos, one transcript-owning subagent reads each full video transcript and returns a complete source note, which the main agent assimilates before visual delegation.
+[Retention guide](skill/references/retention.md): source-note template, evidence
+links, and the complete cleanup loop. [Recovery guide](skill/references/recovery.md):
+interrupted or stale work. [Motion guide](skill/references/motion.md): dense probes,
+event routing, and the limits of sparse samples.
 
-The clean `transcript.txt` keeps timestamps and adds speaker labels when multiple detected speakers make attribution useful. Canonical JSON remains the full-fidelity provider record.
+## Develop
 
-## Development
+`swift test -j 2` runs the tests. `swift build -c release -j 2` builds the CLI.
+The core uses Foundation, CoreGraphics, CoreText, and installed FFmpeg tools;
+there are no third-party Swift packages.
 
-No third-party Swift package is used.
+- `Sources/WatchthroughCore/`: orchestration plus media, transcription, storage, and YouTube modules.
+- `Tests/`: fixtures and behavioral checks.
+- `skill/`: the installable agent workflow and references.
+- `scripts/`: synthetic fixtures, benchmarks, and extraction experiments.
+- `docs/`: one short evidence note per release.
+- `dist/macos-arm64/`: the packaged executable and checksum used by the installer.
 
-~~~bash
-swift test
-swift build -c release
-~~~
+For a reproducible benchmark, generate fixtures with `python3 scripts/fixtures.py --output .scratch/fixtures`, then run `python3 scripts/benchmark.py --help`.
+Keep source media, transcripts, raw results, and credentials outside version control.
 
-Synthetic video fixtures are generated with FFmpeg during integration tests. Downloaded media, transcripts, provider responses, comments, and personal paths must never enter this public repository.
+When packaging a release, copy the executable into `dist/macos-arm64/`, remove
+debug paths with `strip -S`, re-sign with `codesign --force --sign -`, and regenerate
+its SHA256 file. Verify the signature and checksum before committing.
 
-## Research decision
-
-Existing tools such as claude-real-video, claude-video, PySceneDetect, summarize, and Framesleuth validate parts of the workflow but do not provide this project’s small persistent evidence and inspection boundary. watchthrough is a clean Swift implementation that invokes user-installed FFmpeg, FFprobe, MacParakeet, and yt-dlp where applicable. No source code from those projects is vendored.
-
-MIT licensed. See [LICENSE](LICENSE).
+MIT licensed. Downloaded [yt-dlp packages](https://github.com/yt-dlp/yt-dlp#licensing)
+have their own licenses and bundled dependencies.

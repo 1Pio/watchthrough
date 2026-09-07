@@ -2,6 +2,8 @@
 .swiftpm/
 .DS_Store
 .scratch/
+__pycache__/
+*.pyc
 dogfood/
 /docs/acceptance.md
 *.watchthrough/

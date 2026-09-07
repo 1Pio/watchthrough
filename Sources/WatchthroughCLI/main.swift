@@ -54,7 +54,7 @@ private func reportFailure(
 }
 
 private func commandName(in arguments: [String]) -> String {
-    let known = Set(["prepare", "inspect", "status", "help", "version", "--version"])
+    let known = Set(["acquire", "prepare", "inspect", "status", "retain", "cleanup", "help", "version", "--version"])
     guard let value = arguments.first(where: { known.contains($0) }) else { return "unknown" }
     return value == "--version" ? "version" : value
 }
