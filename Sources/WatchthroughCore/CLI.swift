@@ -85,7 +85,7 @@ public enum CLIParser {
     acquire downloads one public YouTube video and returns its local source path.
     --update-downloader explicitly installs/updates a verified managed yt-dlp copy.
     prepare accepts local files. --include accepts relative or returned absolute
-    paths inside the same analysis. See references/youtube.md for source research.
+    paths inside the same analysis. See skill/references/youtube.md for source research.
     """
 
     public static func parse(_ rawArguments: [String]) throws -> CLIInvocation {
