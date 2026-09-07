@@ -1,199 +1,125 @@
 # watchthrough
 
-A local command and agent skill for understanding video through transcript and
-visual evidence. Prepare a source, read its transcript, inspect the parts that
-matter, and keep a useful source note after disposable artifacts move to Trash.
+Let your agent read, see, and understand video.
 
-Version 0.3 adds native YouTube acquisition, clearly timed sheet captions, complete
-inspection verification, and efficient reuse across a growing study. Expensive
-media work remains demand-driven. Preparation returns metadata
-and the requested local transcript. Overview sheets, change scans, and global
-frame indexing run only when requested. Short dense ranges share one bounded
-decode; selected frames record their observed presentation timestamps. A valid
-source with no duration metadata uses a decoded fallback and reports that extra
-work; it does not persist an unrequested global index.
+Watchthrough pairs a local CLI with an agent skill. It turns local videos and
+YouTube links into a transcript, timestamped frames, and contact sheets the agent
+can inspect, then keeps the useful evidence with its source note.
 
-The CLI handles extraction, caching, and evidence receipts. The agent decides what
-to inspect, interprets the source, and answers the user's actual question.
+After [installing](#install), the workflow is small:
+
+1. **Read the video.** `watchthrough prepare video.mp4` returns an analysis directory and a transcript when a speech engine or sidecar is available.
+2. **Get your bearings.** `watchthrough inspect video.mp4.watchthrough overview` makes a 12-frame overview.
+3. **Follow the motion.** `watchthrough inspect video.mp4.watchthrough 03:18..03:19 --every 1f` reveals every decoded frame in that second.
+4. **Look closer.** `watchthrough inspect video.mp4.watchthrough 03:20 --width 1920` returns a detail frame up to 1920 pixels on its long edge.
+
+Add `--json` to any command for structured results. Follow the returned artifact
+paths; the agent reads the transcript and opens the images before answering.
+
+![A section of a video as an agent sees it: timestamped frames with nearby speech](assets/agent-view.png)
+
+*Six frames from 03:18-03:22 of [WeatherNext 3](https://www.youtube.com/watch?v=_6jZlnRsXXQ&t=198s),
+Google DeepMind. Unaltered Watchthrough output, with separate frame and speech times.*
+
+`watchthrough inspect ANALYSIS 03:18..03:22 --every 800ms --cells 6 --width 1280 --sheet-format png`
+reproduces this view.
+
+## A quick look, then a closer one
+
+| What the agent asks for | Measured time |
+|---|---:|
+| Every frame in one second | **0.25 s** for 26 frames |
+| A previously opened inspection | **27 ms** |
+| A whole-video overview | **2 s** for 12 frames |
+| Acquire the YouTube video | **11 s**, including downloader setup |
+| Transcribe it locally | **15 s** |
+
+These examples use a 4:35 video. Watchthrough seeks to the requested region and
+reuses decoded frames when only the layout changes. Whole-video change scans and
+global frame indexing run when requested. [v0.3.0](docs/v0.3.0.md) has the measured
+workflow; [v0.2.0](docs/v0.2.0.md) compares the earlier implementation.
 
 ## Install
 
-Requires Apple Silicon, macOS 14 or newer, and FFmpeg/FFprobe on PATH. Install those
-tools, clone this repository, then run:
+You need **Apple Silicon, macOS 14+, and FFmpeg/FFprobe** on your `PATH`.
+Clone this repository, enter its directory, and run `./install.sh`.
 
-~~~bash
-./install.sh
-~~~
+The installer verifies the packaged executable, links `watchthrough` into
+`~/.local/bin`, and installs the [agent skill](skill/SKILL.md) in
+`~/.agents/skills/watchthrough`. Keep the checkout in place: both are links to it.
+Add `~/.local/bin` to your `PATH` if needed. No service or background process runs.
 
-The installer verifies the committed binary and its signature, links the command
-into `~/.local/bin` and the skill into `~/.agents/skills/watchthrough`, then checks
-readiness. It does not use sudo, edit shell configuration, or download dependencies.
-An existing link to another checkout is reported rather than silently replaced.
+Local speech uses an existing **MacParakeet** installation by default. You can
+also use transcript sidecars or a named command adapter. For an immediate visual
+question, `watchthrough prepare video.mp4 --defer-transcript` gets started without
+waiting for speech; `watchthrough inspect ANALYSIS transcript` adds it later.
+ElevenLabs Scribe is an explicit cloud option, never an automatic fallback.
 
-The local analysis command has no daemon, database, Python environment, bundled
-speech model, or automatic upload. Online acquisition additionally uses yt-dlp
-and an existing supported Deno or Node runtime. Its optional managed downloader
-uses the small official zipimport package with existing CPython >=3.10, or the
-official macOS standalone package when compatible Python is absent. Both include
-matching EJS. No pip install or new Python environment is needed; the installer
-does not fetch either package.
+Run `watchthrough status` when checking dependencies or diagnosing setup.
 
-## Acquire a YouTube source
+## Start from YouTube
 
-~~~bash
-watchthrough --json acquire "https://www.youtube.com/watch?v=VIDEO_ID" \
-  --out "/path/source-bundle"
-~~~
+```sh
+watchthrough --json acquire "YOUTUBE_URL" --out ./source
+watchthrough --json prepare ./source/download/source.mkv
+```
 
-Follow the returned `artifacts.source` path into `prepare`. The acquisition command
-selects current formats, preserves frame rate and original/default audio preference,
-caps height at 1080 by default, and merges without transcoding. `--height` changes
-the cap. It prefers direct delivery within the same resolution/frame-rate tier.
-It does not assume that AVC or the smallest audio stream is always appropriate.
+Acquisition keeps native frame rate and caps resolution at 1080p; `--height 720`
+or `--height 2160` changes the cap. It selects current formats and merges without
+transcoding. Repeat the same command to resume; completed sources reuse locally.
 
-If the downloader is missing or predates the tested client fixes, repeat the
-command with `--update-downloader`. This explicitly fetches the current official
-release package, checks its published SHA256 and version, and activates a separate
-managed copy while keeping the previous one. The system's installed yt-dlp remains
-untouched. Normal acquisition does not install or update executable code.
+YouTube needs **Deno 2.3+ or Node 22+**, plus current yt-dlp with its matching EJS
+component. If yt-dlp is missing or outdated, add `--update-downloader` to explicitly
+install a verified copy managed by Watchthrough. With existing Python 3.10+ this
+is about **3 MB**; otherwise it selects the standalone macOS package. Ordinary
+acquisition does not install code or use browser cookies.
 
-Repeat the same URL, options, and output path after an interruption to resume.
-Completed bundles are verified and reused without contacting YouTube or starting
-the downloader. An explicit update flag still performs the requested tool update.
-The returned context and description files contain useful creator provenance;
-signed stream URLs, request inventories, cookies, and downloaded captions are not
-part of the normal bundle. See [references/youtube.md](skill/references/youtube.md) for
-source research, dependency overrides, and the caption fallback policy.
+[YouTube reference](skill/references/youtube.md): dependency overrides, source
+context, and carefully chosen caption fallbacks.
 
-## Ask for evidence as needed
+## Keep what you learned
 
-~~~bash
-watchthrough --json prepare "/path/video.mp4"
-watchthrough --json inspect "/path/video.mp4.watchthrough" overview
-watchthrough --json inspect "/path/video.mp4.watchthrough" 06:49..06:51 --every 100ms
-watchthrough --json inspect "/path/video.mp4.watchthrough" 06:50.250 --width 3840
-watchthrough --json inspect "/path/video.mp4.watchthrough" 00:10..00:11 --every 1f
-~~~
+Write a source note, then retain it with the selected evidence:
 
-Follow the returned artifact paths. The skill normally has the main agent read the
-entire clean transcript once. For unusually long transcripts or many sources, one
-delegate per source reads the full transcript and returns a compact source note.
-Independent visual questions can proceed meanwhile; whole-video synthesis joins
-the transcript, inspected visuals, and source context.
+```sh
+watchthrough retain ANALYSIS --note source-note.md --include PACKET_PATH
+watchthrough cleanup ANALYSIS
+watchthrough cleanup ANALYSIS --apply
+```
 
-For immediate visual work, use `prepare VIDEO --defer-transcript`, followed later
-by `inspect ANALYSIS transcript`. Use `inspect ANALYSIS events` for an optional
-full-video change scan. `inspect ANALYSIS frame:18720` explicitly builds the full
-decoded index to establish a global frame ordinal. Timestamp and regional `1f`
-probes normally avoid that cost and label their ordinal basis honestly.
+`PACKET_PATH` can be the absolute path returned by `inspect`. Selecting a packet
+also keeps its frames and sheets. The library preserves the note, full available
+transcript, source provenance, and selected evidence with checksums. Cleanup
+previews first, then moves the verified analysis cache to system Trash; the source
+video and library remain available.
 
-Overview defaults to 12 images at a 720-pixel long edge. Targeted probes default to
-1920 pixels; `--width` changes the long edge. Contact sheets default to JPEG;
-`--sheet-format png` selects lossless sheet encoding. Selected frame files remain
-separately accessible. Images preserve rotation and display aspect ratio.
+The default library lives at `~/Library/Application Support/watchthrough/library`;
+`--library DIRECTORY` selects another location. Use `watchthrough status ANALYSIS --verify` to check the source and every completed inspection packet.
 
-Sheet captions show nearby speech with its actual timing bounds. Segment-only
-transcripts retain whole-cue bounds; silence and unavailable timing are explicit.
-An ellipsis marks a shortened sheet excerpt. Complete interval text remains in the
-packet Markdown and JSON. Cell sequence labels identify sheet order, not invented
-global frame ordinals.
+[Retention guide](skill/references/retention.md): source-note template, evidence
+links, and the complete cleanup loop. [Recovery guide](skill/references/recovery.md):
+interrupted or stale work. [Motion guide](skill/references/motion.md): dense probes,
+event routing, and the limits of sparse samples.
 
-Media work runs serially with a default two-thread budget per codec/filter pool.
-Low-power mode or serious thermal pressure reduces that budget to one.
-`WATCHTHROUGH_THREADS=1..8` overrides the normal budget. This bounds concurrency;
-it is not a guarantee about temperature or system responsiveness.
+## Develop
 
-## Transcript and source context
+`swift test -j 2` runs the tests. `swift build -c release -j 2` builds the CLI.
+The core uses Foundation, CoreGraphics, CoreText, and installed FFmpeg tools;
+there are no third-party Swift packages.
 
-`--transcriber auto` stays local: a source-adjacent SRT/VTT/canonical JSON sidecar,
-then compatible MacParakeet, then a configured local command adapter, otherwise an
-explicit visual-only result. Speaker detection is optional via `--speakers`.
-Clean text preserves useful timestamps and speaker labels; canonical JSON keeps
-the normalized provider record, language, model, and timing precision.
+- `Sources/WatchthroughCore/`: orchestration plus media, transcription, storage, and YouTube modules.
+- `Tests/`: fixtures and behavioral checks.
+- `skill/`: the installable agent workflow and references.
+- `scripts/`: synthetic fixtures, benchmarks, and extraction experiments.
+- `docs/`: one short evidence note per release.
+- `dist/macos-arm64/`: the packaged executable and checksum used by the installer.
 
-ElevenLabs Scribe requires explicit `--transcriber scribe` and authorization for
-upload and cost. Its key can come from the environment, macOS Keychain, or
-`~/.config/watchthrough/.env`; it is not put in subprocess arguments or artifacts.
+For a reproducible benchmark, generate fixtures with `python3 scripts/fixtures.py --output .scratch/fixtures`, then run `python3 scripts/benchmark.py --help`.
+Keep source media, transcripts, raw results, and credentials outside version control.
 
-Online acquisition and bounded description/comment research are documented in
-[references/youtube.md](skill/references/youtube.md). Local ASR is the normal route.
-Downloaded captions stay language-qualified and are a vetted last fallback, not
-automatically promoted to authoritative transcription.
+When packaging a release, copy the executable into `dist/macos-arm64/`, remove
+debug paths with `strip -S`, re-sign with `codesign --force --sign -`, and regenerate
+its SHA256 file. Verify the signature and checksum before committing.
 
-## Recover and reuse
-
-`status ANALYSIS` reads readiness without probing unrelated providers or hashing
-the whole source. `status ANALYSIS --verify` performs content verification, including
-every completed inspection packet, and reports the verified packet count. Changed
-source metadata invalidates ordinary reuse; changed transcript or rendering inputs
-invalidate affected packets. Packet inventories detect corrupt evidence.
-
-Successful stages survive later failures. A yielded command still has one owner:
-poll its existing session instead of starting another preparation. See
-[references/recovery.md](skill/references/recovery.md) for stale and interrupted work.
-
-## Retain useful knowledge, then clean up
-
-Write an authored Markdown source note outside the analysis directory, including
-the full-script summary, relevant inspected visuals, referenced source information,
-and coverage gaps. Then use actual returned evidence paths:
-
-~~~bash
-watchthrough --json retain ANALYSIS --note /path/source-note.md \
-  --include /path/ANALYSIS/inspections/PACKET/packet.json --dossier /path/source.description
-watchthrough --json cleanup ANALYSIS
-watchthrough --json cleanup ANALYSIS --apply
-~~~
-
-The dedicated library defaults to
-`~/Library/Application Support/watchthrough/library`; `--library DIRECTORY`
-overrides it. Each immutable snapshot holds `summary.md`, the complete available
-canonical transcript, source provenance, selected evidence, explicit dossiers, and
-a checksummed receipt. Selecting a packet also retains its frame and sheet
-dependencies. Summary links must resolve in the snapshot. The skill searches these
-source notes before reprocessing a previously studied video and reuses retained
-evidence when its coverage is sufficient.
-
-`--include` accepts returned absolute artifact paths or paths relative to the same
-analysis. It rejects outside files, traversal, and linked artifacts. Use
-`--dossier` for explicitly selected source context outside the analysis.
-
-Cleanup previews first, then moves only the owned analysis directory to native
-system Trash after verifying a matching snapshot. It preserves the source video
-and library. Active writers, changed evidence, unsafe paths, corrupt archives, and
-unknown user files prevent cleanup. See the note template and exact workflow in
-[references/retention.md](skill/references/retention.md).
-
-## Development and evidence
-
-~~~bash
-swift test -j 2
-swift build -c release -j 2
-python3 scripts/fixtures.py --output .scratch/fixtures
-python3 scripts/benchmark.py --binary .build/release/watchthrough \
-  --label candidate --fixtures .scratch/fixtures/fixtures.json \
-  --output .scratch/bench --repeats 2 --warm-inspections
-~~~
-
-For a reviewed release, copy the release executable to `dist/macos-arm64/`, remove
-debug-only build paths with `strip -S`, re-sign with `codesign --force --sign -`,
-and regenerate `watchthrough.sha256` from that directory. Verify the signature and
-checksum after packaging. Keep benchmark binary hashes and any packaging changes
-in the release evidence.
-
-The implementation uses installed FFmpeg/FFprobe and native CoreGraphics,
-ImageIO, and CoreText. No third-party Swift package is used. Local ASR adapters
-reuse existing speech runtimes. Optical flow and 3D reconstruction remain explicit
-specialist follow-up work on bounded evidence, documented in
-[references/motion.md](skill/references/motion.md).
-
-Release evidence is kept in one short note per version:
-[v0.2.0](docs/v0.2.0.md) compares the earlier implementation;
-[v0.3.0](docs/v0.3.0.md) records native acquisition and the short-video workflow.
-Synthetic fixtures and deterministic tests cover the tested domain; sparse samples
-never establish exhaustive visual coverage.
-
-Downloaded media, transcripts, provider responses, comments, and personal paths
-must not enter this public repository. MIT licensed; see [LICENSE](LICENSE).
-Downloaded yt-dlp packages have their own [upstream licenses](https://github.com/yt-dlp/yt-dlp#licensing),
-including bundled third-party components.
+MIT licensed. Downloaded [yt-dlp packages](https://github.com/yt-dlp/yt-dlp#licensing)
+have their own licenses and bundled dependencies.
